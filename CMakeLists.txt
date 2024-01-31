@@ -1,0 +1,8 @@
+SET(CMAKE_BUILD_TYPE "Release")
+cmake_minimum_required(VERSION 2.8)
+project( FeatureTracker )
+find_package( OpenCV REQUIRED )
+find_package(depthai CONFIG REQUIRED)
+include_directories( ${OpenCV_INCLUDE_DIRS} )
+add_executable( feature_tracker feature_tracker.cpp )
+target_link_libraries( feature_tracker ${OpenCV_LIBS} depthai::opencv -lroscpp -lrostime -lrosconsole -lroscpp_serialization)
