@@ -16,80 +16,6 @@
 #define CAM_H 400
 #define PAIR_DIST_SQ 16
 
-static const auto lineColor = cv::Scalar(200, 0, 200);
-static const auto pointColor = cv::Scalar(0, 0, 255);
-
-class FeatureTrackerDrawer {
-   private:
-    static const int circleRadius = 2;
-    static const int maxTrackedFeaturesPathLength = 30;
-    // for how many frames the feature is tracked
-    static int trackedFeaturesPathLength;
-
-    using featureIdType = decltype(dai::Point2f::x);
-
-    std::unordered_set<featureIdType> trackedIDs;
-    std::unordered_map<featureIdType, std::deque<dai::Point2f>> trackedFeaturesPath;
-
-    std::string trackbarName;
-    std::string windowName;
-
-   public:
-    void trackFeaturePath(std::vector<dai::TrackedFeature>& features) {
-        std::unordered_set<featureIdType> newTrackedIDs;
-        for(auto& currentFeature : features) {
-            auto currentID = currentFeature.id;
-            newTrackedIDs.insert(currentID);
-
-            if(!trackedFeaturesPath.count(currentID)) {
-                trackedFeaturesPath.insert({currentID, std::deque<dai::Point2f>()});
-            }
-            std::deque<dai::Point2f>& path = trackedFeaturesPath.at(currentID);
-
-            path.push_back(currentFeature.position);
-            while(path.size() > std::max<unsigned int>(1, trackedFeaturesPathLength)) {
-                path.pop_front();
-            }
-        }
-
-        std::unordered_set<featureIdType> featuresToRemove;
-        for(auto& oldId : trackedIDs) {
-            if(!newTrackedIDs.count(oldId)) {
-                featuresToRemove.insert(oldId);
-            }
-        }
-
-        for(auto& id : featuresToRemove) {
-            trackedFeaturesPath.erase(id);
-        }
-
-        trackedIDs = newTrackedIDs;
-    }
-
-    void drawFeatures(cv::Mat& img) {
-        cv::setTrackbarPos(trackbarName.c_str(), windowName.c_str(), trackedFeaturesPathLength);
-
-        for(auto& featurePath : trackedFeaturesPath) {
-            std::deque<dai::Point2f>& path = featurePath.second;
-            unsigned int j = 0;
-            for(j = 0; j < path.size() - 1; j++) {
-                auto src = cv::Point(path[j].x, path[j].y);
-                auto dst = cv::Point(path[j + 1].x, path[j + 1].y);
-                cv::line(img, src, dst, lineColor, 1, cv::LINE_AA, 0);
-            }
-
-            cv::circle(img, cv::Point(path[j].x, path[j].y), circleRadius, pointColor, -1, cv::LINE_AA, 0);
-        }
-    }
-
-    FeatureTrackerDrawer(std::string trackbarName, std::string windowName) : trackbarName(trackbarName), windowName(windowName) {
-        cv::namedWindow(windowName.c_str());
-        cv::createTrackbar(trackbarName.c_str(), windowName.c_str(), &trackedFeaturesPathLength, maxTrackedFeaturesPathLength, nullptr);
-    }
-};
-
-int FeatureTrackerDrawer::trackedFeaturesPathLength = 10;
-
 int main(int argc, char **argv) {
     double fx = 4.2007635451376063e+02;
     double cx = 3.0906091871893943e+02;
@@ -110,6 +36,7 @@ int main(int argc, char **argv) {
 
     ros::init(argc, argv, "feature_tracker", ros::init_options::NoSigintHandler);
     ros::NodeHandle nh;
+    ros::Publisher pp_pub = nh.advertise<sensor_msgs::PointCloud>("/feature_tracker/feature", 10);
 
     // Create pipeline
     dai::Pipeline pipeline;
@@ -120,20 +47,14 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
 
-    auto xoutPassthroughFrameLeft = pipeline.create<dai::node::XLinkOut>();
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
-    auto xoutPassthroughFrameRight = pipeline.create<dai::node::XLinkOut>();
     auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
-    auto xinTrackedFeaturesConfig = pipeline.create<dai::node::XLinkIn>();
 
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
 
-    xoutPassthroughFrameLeft->setStreamName("passthroughFrameLeft");
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
-    xoutPassthroughFrameRight->setStreamName("passthroughFrameRight");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
-    xinTrackedFeaturesConfig->setStreamName("trackedFeaturesConfig");
     xout_disp->setStreamName("disparity");
 
     // Properties
@@ -156,15 +77,11 @@ int main(int argc, char **argv) {
     // Linking
     monoLeft->out.link(depth->left);
     depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
-    featureTrackerLeft->passthroughInputImage.link(xoutPassthroughFrameLeft->input);
     featureTrackerLeft->outputFeatures.link(xoutTrackedFeaturesLeft->input);
-    xinTrackedFeaturesConfig->out.link(featureTrackerLeft->inputConfig);
 
     monoRight->out.link(depth->right);
     depth->rectifiedRight.link(featureTrackerRight->inputImage);
-    featureTrackerRight->passthroughInputImage.link(xoutPassthroughFrameRight->input);
     featureTrackerRight->outputFeatures.link(xoutTrackedFeaturesRight->input);
-    xinTrackedFeaturesConfig->out.link(featureTrackerRight->inputConfig);
 
     depth->disparity.link(xout_disp->input);
 
@@ -175,27 +92,13 @@ int main(int argc, char **argv) {
     featureTrackerLeft->setHardwareResources(numShaves, numMemorySlices);
     featureTrackerRight->setHardwareResources(numShaves, numMemorySlices);
 
-    auto featureTrackerConfig = featureTrackerRight->initialConfig.get();
-
-    printf("Press 's' to switch between Lucas-Kanade optical flow and hardware accelerated motion estimation! \n");
-
     // Connect to device and start pipeline
     dai::Device device(pipeline);
 
     // Output queues used to receive the results
-    auto passthroughImageLeftQueue = device.getOutputQueue("passthroughFrameLeft", 8, false);
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 8, false);
-    auto passthroughImageRightQueue = device.getOutputQueue("passthroughFrameRight", 8, false);
     auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 8, false);
     auto disp_queue = device.getOutputQueue("disparity", 8, false);
-
-    auto inputFeatureTrackerConfigQueue = device.getInputQueue("trackedFeaturesConfig");
-
-    const auto leftWindowName = "left";
-    auto leftFeatureDrawer = FeatureTrackerDrawer("Feature tracking duration (frames)", leftWindowName);
-
-    const auto rightWindowName = "right";
-    auto rightFeatureDrawer = FeatureTrackerDrawer("Feature tracking duration (frames)", rightWindowName);
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
     std::vector<std::uint8_t> disp_frame;
@@ -209,21 +112,7 @@ int main(int argc, char **argv) {
     while(true) {
         auto q_name = device.getQueueEvent();
 
-        if (q_name == "passthroughFrameLeft") {
-            auto inPassthroughFrameLeft = passthroughImageLeftQueue->get<dai::ImgFrame>();
-            cv::Mat passthroughFrameLeft = inPassthroughFrameLeft->getFrame();
-            cv::Mat leftFrame;
-            cv::cvtColor(passthroughFrameLeft, leftFrame, cv::COLOR_GRAY2BGR);
-            leftFeatureDrawer.drawFeatures(leftFrame);
-            cv::imshow(leftWindowName, leftFrame);
-        } else if (q_name == "passthroughFrameRight") {
-            auto inPassthroughFrameRight = passthroughImageRightQueue->get<dai::ImgFrame>();
-            cv::Mat passthroughFrameRight = inPassthroughFrameRight->getFrame();
-            cv::Mat rightFrame;
-            cv::cvtColor(passthroughFrameRight, rightFrame, cv::COLOR_GRAY2BGR);
-            rightFeatureDrawer.drawFeatures(rightFrame);
-            cv::imshow(rightWindowName, rightFrame);
-        } else if (q_name == "trackedFeaturesLeft") {
+        if (q_name == "trackedFeaturesLeft") {
             auto data = outputFeaturesLeftQueue->get<dai::TrackedFeatures>();
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
@@ -234,8 +123,6 @@ int main(int argc, char **argv) {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
             r_features = data->trackedFeatures;
             r_seq = data->getSequenceNum();
-
-            rightFeatureDrawer.trackFeaturePath(r_features);
         } else if (q_name == "disparity") {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
@@ -315,6 +202,7 @@ int main(int argc, char **argv) {
                     }
                 }
             }
+            if (pp_msg.points.size() > 0) pp_pub.publish(pp_msg);
             l_prv_features = features;
             prv_features_tp = features_tp;
             r_prv_features.clear();
@@ -323,23 +211,6 @@ int main(int argc, char **argv) {
             }
             //auto t2 = std::chrono::steady_clock::now();
             //std::cout << "cost " << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
-            leftFeatureDrawer.trackFeaturePath(draw_l_features);
-        }
-
-        int key = cv::waitKey(1);
-        if(key == 'q') {
-            break;
-        } else if(key == 's') {
-            if(featureTrackerConfig.motionEstimator.type == dai::FeatureTrackerConfig::MotionEstimator::Type::LUCAS_KANADE_OPTICAL_FLOW) {
-                featureTrackerConfig.motionEstimator.type = dai::FeatureTrackerConfig::MotionEstimator::Type::HW_MOTION_ESTIMATION;
-                printf("Switching to hardware accelerated motion estimation \n");
-            } else {
-                featureTrackerConfig.motionEstimator.type = dai::FeatureTrackerConfig::MotionEstimator::Type::LUCAS_KANADE_OPTICAL_FLOW;
-                printf("Switching to Lucas-Kanade optical flow \n");
-            }
-            auto cfg = dai::FeatureTrackerConfig();
-            cfg.set(featureTrackerConfig);
-            inputFeatureTrackerConfigQueue->send(cfg);
         }
     }
     return 0;
