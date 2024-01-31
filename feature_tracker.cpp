@@ -11,6 +11,8 @@
 #include "geometry_msgs/Point32.h"
 #include "sensor_msgs/ChannelFloat32.h"
 #include "std_msgs/Header.h"
+#include "sensor_msgs/Imu.h"
+#include "geometry_msgs/Vector3.h"
 
 #define CAM_W 640
 #define CAM_H 400
@@ -37,6 +39,7 @@ int main(int argc, char **argv) {
     ros::init(argc, argv, "feature_tracker", ros::init_options::NoSigintHandler);
     ros::NodeHandle nh;
     ros::Publisher pp_pub = nh.advertise<sensor_msgs::PointCloud>("/feature_tracker/feature", 10);
+    ros::Publisher imu_pub = nh.advertise<sensor_msgs::Imu>("/camera/imu", 100);
 
     // Create pipeline
     dai::Pipeline pipeline;
@@ -46,16 +49,19 @@ int main(int argc, char **argv) {
     auto monoRight = pipeline.create<dai::node::MonoCamera>();
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
+    auto imu = pipeline.create<dai::node::IMU>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
     auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
 
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
+    auto xout_imu = pipeline.create<dai::node::XLinkOut>();
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
+    xout_imu->setStreamName("imu");
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
@@ -74,6 +80,18 @@ int main(int argc, char **argv) {
     depth->setDepthAlign(dai::RawStereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_LEFT);
     depth->setAlphaScaling(0);
 
+    // enable ACCELEROMETER_RAW at 500 hz rate
+    imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_RAW, 250);
+    // enable GYROSCOPE_RAW at 400 hz rate
+    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
+    // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
+    // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
+    imu->setBatchReportThreshold(1);
+    // maximum number of IMU packets in a batch, if it's reached device will block sending until host can receive it
+    // if lower or equal to batchReportThreshold then the sending is always blocking on device
+    // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
+    imu->setMaxBatchReports(10);
+
     // Linking
     monoLeft->out.link(depth->left);
     depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
@@ -84,6 +102,7 @@ int main(int argc, char **argv) {
     featureTrackerRight->outputFeatures.link(xoutTrackedFeaturesRight->input);
 
     depth->disparity.link(xout_disp->input);
+    imu->out.link(xout_imu->input);
 
     // By default the least mount of resources are allocated
     // increasing it improves performance when optical flow is enabled
@@ -99,6 +118,7 @@ int main(int argc, char **argv) {
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 8, false);
     auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 8, false);
     auto disp_queue = device.getOutputQueue("disparity", 8, false);
+    auto imuQueue = device.getOutputQueue("imu", 50, false);
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
     std::vector<std::uint8_t> disp_frame;
@@ -117,8 +137,6 @@ int main(int argc, char **argv) {
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
             features_tp = data->getTimestamp();
-
-            //leftFeatureDrawer.trackFeaturePath(l_features);
         } else if (q_name == "trackedFeaturesRight") {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
             r_features = data->trackedFeatures;
@@ -127,10 +145,25 @@ int main(int argc, char **argv) {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
             disp_frame = disp_data->getData();
+        } else if (q_name == "imu") {
+            auto imuData = imuQueue->get<dai::IMUData>();
+            auto imuPackets = imuData->packets;
+            for(const auto& imuPacket : imuPackets) {
+                auto& acc = imuPacket.acceleroMeter;
+                auto& gyro = imuPacket.gyroscope;
+                sensor_msgs::Imu imu_msg;
+                imu_msg.header.stamp = ros::Time().fromNSec(std::chrono::duration_cast<std::chrono::nanoseconds>(acc.getTimestamp().time_since_epoch()).count());
+                imu_msg.linear_acceleration.x = acc.z;
+                imu_msg.linear_acceleration.y = acc.y;
+                imu_msg.linear_acceleration.z = -acc.x;
+                imu_msg.angular_velocity.x = gyro.z;
+                imu_msg.angular_velocity.y = gyro.y;
+                imu_msg.angular_velocity.z = -gyro.x;
+                imu_pub.publish(imu_msg);
+            }
         }
 
         if (l_seq == r_seq && r_seq == disp_seq) {
-            std::vector<dai::TrackedFeature> draw_l_features;
             //auto t1 = std::chrono::steady_clock::now();
             l_seq = -1;
             r_seq = -2;
@@ -155,7 +188,6 @@ int main(int argc, char **argv) {
                         float dy = y - r_feature.position.y;
                         float dx = x - disp - r_feature.position.x;
                         if (dy * dy + dx * dx <= PAIR_DIST_SQ) { //pair found
-                            draw_l_features.push_back(l_feature);
                             float dt = std::chrono::duration<float>(features_tp - prv_features_tp).count();
                             float vx = 0, vy = 0;
                             auto prv_pos = l_prv_features.find(l_feature.id);
@@ -190,8 +222,8 @@ int main(int argc, char **argv) {
                             p.y = cur_un_y;
                             p.z = 1;
                             pp_msg.points.push_back(p);
-                            pp_msg.channels[0].values.push_back(r_feature.id);
-                            pp_msg.channels[1].values.push_back(0);
+                            pp_msg.channels[0].values.push_back(l_feature.id);
+                            pp_msg.channels[1].values.push_back(1);
                             pp_msg.channels[2].values.push_back(x);
                             pp_msg.channels[3].values.push_back(y);
                             pp_msg.channels[4].values.push_back(vx);
@@ -210,7 +242,7 @@ int main(int argc, char **argv) {
                 r_prv_features[r_feature.id] = dai::Point2f(r_inv_k11 * r_feature.position.x + r_inv_k13, r_inv_k22 * r_feature.position.y + r_inv_k23);
             }
             //auto t2 = std::chrono::steady_clock::now();
-            //std::cout << "cost " << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
+            //std::cout << pp_msg.points.size() << "points, " << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
         }
     }
     return 0;
