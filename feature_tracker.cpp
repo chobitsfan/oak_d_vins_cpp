@@ -71,8 +71,8 @@ int main(int argc, char **argv) {
     monoRight->setCamera("right");
     monoRight->setFps(20);
 
-    featureTrackerLeft->initialConfig.setNumTargetFeatures(16*3);
-    featureTrackerRight->initialConfig.setNumTargetFeatures(16*3);
+    featureTrackerLeft->initialConfig.setNumTargetFeatures(16*4);
+    featureTrackerRight->initialConfig.setNumTargetFeatures(16*4);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::KERNEL_7x7);
@@ -83,9 +83,9 @@ int main(int argc, char **argv) {
     depth->setAlphaScaling(0);
 
     // enable ACCELEROMETER_RAW at 500 hz rate
-    imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_RAW, 250);
+    imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER, 125);
     // enable GYROSCOPE_RAW at 400 hz rate
-    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
+    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_CALIBRATED, 100);
     // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
     // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
     imu->setBatchReportThreshold(1);
