@@ -16,7 +16,7 @@
 
 #define CAM_W 640
 #define CAM_H 400
-#define PAIR_DIST_SQ 16
+#define PAIR_DIST_SQ 9
 
 int main(int argc, char **argv) {
     double fx = 4.2007635451376063e+02;
@@ -66,8 +66,10 @@ int main(int argc, char **argv) {
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
     monoLeft->setCamera("left");
+    monoLeft->setFps(20);
     monoRight->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
     monoRight->setCamera("right");
+    monoRight->setFps(20);
 
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*3);
     featureTrackerRight->initialConfig.setNumTargetFeatures(16*3);
@@ -123,8 +125,9 @@ int main(int argc, char **argv) {
     int l_seq = -1, r_seq = -2, disp_seq = -3;
     std::vector<std::uint8_t> disp_frame;
     std::vector<dai::TrackedFeature> l_features, r_features;
-    std::map<int, dai::Point2f> l_prv_features, r_prv_features;
+    std::map<int, dai::Point2f> l_prv_features, r_prv_features, r_cur_features;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> features_tp, prv_features_tp;
+    std::map<int, int> lr_id_mapping;
 
     // Clear queue events
     device.getQueueEvents();
@@ -141,6 +144,10 @@ int main(int argc, char **argv) {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
             r_features = data->trackedFeatures;
             r_seq = data->getSequenceNum();
+            r_cur_features.clear();
+            for (const auto &feature : r_features) {
+                r_cur_features[feature.id] = feature.position;
+            }
         } else if (q_name == "disparity") {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
@@ -178,6 +185,54 @@ int main(int argc, char **argv) {
                 float cur_un_x = l_inv_k11 * x + l_inv_k13;
                 float cur_un_y = l_inv_k22 * y + l_inv_k23;
                 features[l_feature.id] = dai::Point2f(cur_un_x, cur_un_y);
+                auto lr_id = lr_id_mapping.find(l_feature.id);
+                if (lr_id != lr_id_mapping.end()) {
+                    auto r_feature = r_cur_features.find(lr_id->second);
+                    if (r_feature != r_cur_features.end()) {
+                        float dt = std::chrono::duration<float>(features_tp - prv_features_tp).count();
+                        float vx = 0, vy = 0;
+                        auto prv_pos = l_prv_features.find(l_feature.id);
+                        if (prv_pos != l_prv_features.end()) {
+                            vx = (cur_un_x - prv_pos->second.x) / dt;
+                            vy = (cur_un_y - prv_pos->second.y) / dt;
+                        }
+                        geometry_msgs::Point32 p;
+                        p.x = cur_un_x;
+                        p.y = cur_un_y;
+                        p.z = 1;
+                        pp_msg.points.push_back(p);
+                        pp_msg.channels[0].values.push_back(l_feature.id);
+                        pp_msg.channels[1].values.push_back(0);
+                        pp_msg.channels[2].values.push_back(x);
+                        pp_msg.channels[3].values.push_back(y);
+                        pp_msg.channels[4].values.push_back(vx);
+                        pp_msg.channels[5].values.push_back(vy);
+
+                        x = r_feature->second.x;
+                        y = r_feature->second.y;
+                        vx = 0;
+                        vy = 0;
+                        cur_un_x = r_inv_k11 * x + r_inv_k13;
+                        cur_un_y = r_inv_k22 * y + r_inv_k23;
+                        prv_pos = r_prv_features.find(r_feature->first);
+                        if (prv_pos != r_prv_features.end()) {
+                            vx = (cur_un_x - prv_pos->second.x) / dt;
+                            vy = (cur_un_y - prv_pos->second.y) / dt;
+                        }
+                        p.x = cur_un_x;
+                        p.y = cur_un_y;
+                        p.z = 1;
+                        pp_msg.points.push_back(p);
+                        pp_msg.channels[0].values.push_back(l_feature.id);
+                        pp_msg.channels[1].values.push_back(1);
+                        pp_msg.channels[2].values.push_back(x);
+                        pp_msg.channels[3].values.push_back(y);
+                        pp_msg.channels[4].values.push_back(vx);
+                        pp_msg.channels[5].values.push_back(vy);
+
+                        continue;
+                    }
+                }
                 float row = roundf(y);
                 float col = roundf(x);
                 if (row > CAM_H - 1) row = CAM_H - 1;
@@ -188,6 +243,7 @@ int main(int argc, char **argv) {
                         float dy = y - r_feature.position.y;
                         float dx = x - disp - r_feature.position.x;
                         if (dy * dy + dx * dx <= PAIR_DIST_SQ) { //pair found
+                            lr_id_mapping[l_feature.id] = r_feature.id;
                             float dt = std::chrono::duration<float>(features_tp - prv_features_tp).count();
                             float vx = 0, vy = 0;
                             auto prv_pos = l_prv_features.find(l_feature.id);
