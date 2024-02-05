@@ -118,6 +118,9 @@ int main(int argc, char **argv) {
     // Connect to device and start pipeline
     dai::Device device(pipeline);
 
+    std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
+    std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
+
     // Output queues used to receive the results
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 8, false);
     auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 8, false);
