@@ -36,6 +36,8 @@ int main(int argc, char **argv) {
     double r_inv_k22 = 1.0 / fy;
     double r_inv_k23 = -cy / fy;
 
+    bool imu_ok = false;
+
     ros::init(argc, argv, "feature_tracker", ros::init_options::NoSigintHandler);
     ros::NodeHandle nh;
     ros::Publisher pp_pub = nh.advertise<sensor_msgs::PointCloud>("/feature_tracker/feature", 10);
@@ -75,7 +77,7 @@ int main(int argc, char **argv) {
     featureTrackerRight->initialConfig.setNumTargetFeatures(16*4);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
-    depth->initialConfig.setMedianFilter(dai::MedianFilter::KERNEL_7x7);
+    depth->initialConfig.setMedianFilter(dai::MedianFilter::KERNEL_5x5);
     depth->setLeftRightCheck(true);
     depth->setExtendedDisparity(false);
     depth->setSubpixel(false);
@@ -140,6 +142,7 @@ int main(int argc, char **argv) {
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
             features_tp = data->getTimestamp();
+            //std::cout << "ft latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
         } else if (q_name == "trackedFeaturesRight") {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
             r_features = data->trackedFeatures;
@@ -152,6 +155,7 @@ int main(int argc, char **argv) {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
             disp_frame = disp_data->getData();
+            //std::cout << "stereo latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
         } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
             auto imuPackets = imuData->packets;
@@ -167,6 +171,10 @@ int main(int argc, char **argv) {
                 imu_msg.angular_velocity.y = gyro.y;
                 imu_msg.angular_velocity.z = -gyro.x;
                 imu_pub.publish(imu_msg);
+            }
+            if (!imu_ok) {
+                imu_ok = true;
+                std::cout<< "imu ok\n";
             }
         }
 
@@ -290,6 +298,7 @@ int main(int argc, char **argv) {
                     }
                 }
             }
+            //std::cout << "latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
             if (pp_msg.points.size() > 0) pp_pub.publish(pp_msg);
             l_prv_features = features;
             prv_features_tp = features_tp;
