@@ -1,4 +1,6 @@
 #include <iostream>
+#include <thread>
+#include <chrono>
 
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
@@ -17,6 +19,8 @@
 #define CAM_W 640
 #define CAM_H 400
 #define PAIR_DIST_SQ 9
+
+using namespace std::chrono_literals;
 
 int main(int argc, char **argv) {
     double fx = 4.2007635451376063e+02;
@@ -121,6 +125,9 @@ int main(int argc, char **argv) {
     std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
     std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
 
+    //device.setLogOutputLevel(dai::LogLevel::TRACE);
+    //device.setLogLevel(dai::LogLevel::TRACE);
+
     // Output queues used to receive the results
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 8, false);
     auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 8, false);
@@ -138,15 +145,16 @@ int main(int argc, char **argv) {
     device.getQueueEvents();
 
     while(true) {
-        auto q_name = device.getQueueEvent();
+        std::this_thread::sleep_for(1ms);
 
-        if (q_name == "trackedFeaturesLeft") {
+        if (outputFeaturesLeftQueue->has()) {
             auto data = outputFeaturesLeftQueue->get<dai::TrackedFeatures>();
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
             features_tp = data->getTimestamp();
             //std::cout << "ft latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
-        } else if (q_name == "trackedFeaturesRight") {
+        }
+        if (outputFeaturesRightQueue->has()) {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
             r_features = data->trackedFeatures;
             r_seq = data->getSequenceNum();
@@ -154,12 +162,14 @@ int main(int argc, char **argv) {
             for (const auto &feature : r_features) {
                 r_cur_features[feature.id] = feature.position;
             }
-        } else if (q_name == "disparity") {
+        }
+        if (disp_queue->has()) {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
             disp_frame = disp_data->getData();
             //std::cout << "stereo latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
-        } else if (q_name == "imu") {
+        }
+        if (imuQueue->has()) {
             auto imuData = imuQueue->get<dai::IMUData>();
             auto imuPackets = imuData->packets;
             for(const auto& imuPacket : imuPackets) {
