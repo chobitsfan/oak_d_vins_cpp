@@ -77,8 +77,8 @@ int main(int argc, char **argv) {
     monoRight->setCamera("right");
     monoRight->setFps(20);
 
-    featureTrackerLeft->initialConfig.setNumTargetFeatures(16*4);
-    featureTrackerRight->initialConfig.setNumTargetFeatures(16*4);
+    featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
+    featureTrackerRight->initialConfig.setNumTargetFeatures(16*5);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::KERNEL_5x5);
@@ -320,7 +320,7 @@ int main(int argc, char **argv) {
                 r_prv_features[r_feature.id] = dai::Point2f(r_inv_k11 * r_feature.position.x + r_inv_k13, r_inv_k22 * r_feature.position.y + r_inv_k23);
             }
             //auto t2 = std::chrono::steady_clock::now();
-            //std::cout << pp_msg.points.size() << "points, " << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
+            //std::cout << pp_msg.points.size() << " points, " << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
         }
     }
     return 0;
