@@ -41,6 +41,7 @@ int main(int argc, char **argv) {
     double r_inv_k23 = -cy / fy;
 
     bool imu_ok = false;
+    int ccc=0;
 
     ros::init(argc, argv, "feature_tracker", ros::init_options::NoSigintHandler);
     ros::NodeHandle nh;
@@ -311,7 +312,11 @@ int main(int argc, char **argv) {
                     }
                 }
             }
-            //std::cout << "latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
+            ccc++;
+            if (ccc > 60) {
+                ccc = 0;
+                std::cout << "total latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
+            }
             if (pp_msg.points.size() > 0) pp_pub.publish(pp_msg);
             l_prv_features = features;
             prv_features_tp = features_tp;
