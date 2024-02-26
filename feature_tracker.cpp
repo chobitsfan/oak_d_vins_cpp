@@ -2,6 +2,14 @@
 #include <thread>
 #include <chrono>
 
+#include <arpa/inet.h>
+#include <errno.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <string.h>
+
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
 #include "deque"
@@ -19,8 +27,72 @@
 #define CAM_W 640
 #define CAM_H 400
 #define PAIR_DIST_SQ 9
+#define MJPG_PORT 8080
 
-using namespace std::chrono_literals;
+int mjpg_sockfd = -1;
+
+void wait_mjpg_conn() {
+    // Create a socket
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1) {
+        perror("webserver (socket)");
+        return;
+    }
+    printf("socket created successfully\n");
+
+    int opt = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt));
+
+    // Create the address to bind the socket to
+    struct sockaddr_in host_addr;
+    int host_addrlen = sizeof(host_addr);
+
+    host_addr.sin_family = AF_INET;
+    host_addr.sin_port = htons(MJPG_PORT);
+    host_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    // Bind the socket to the address
+    if (bind(sockfd, (struct sockaddr *)&host_addr, host_addrlen) != 0) {
+        perror("webserver (bind)");
+        return;
+    }
+    printf("socket successfully bound to address\n");
+
+    // Listen for incoming connections
+    if (listen(sockfd, SOMAXCONN) != 0) {
+        perror("webserver (listen)");
+        return;
+    }
+    printf("mjpg server listening for connections\n");
+
+    while (true) {
+        mjpg_sockfd = accept(sockfd, (struct sockaddr *)&host_addr, (socklen_t *)&host_addrlen);
+        if (mjpg_sockfd >= 0) {
+            char http_rsp[] = "HTTP/1.0 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=jpgboundary\r\n\r\n";
+            printf("mjpg connection accepted\n");
+            write(mjpg_sockfd, http_rsp, sizeof(http_rsp)-1);
+        }
+    }
+}
+
+void new_mjpg_frame(std::shared_ptr<dai::ADatatype> msg) {
+    dai::ImgFrame* mjpeg = static_cast<dai::ImgFrame*>(msg.get());
+    if (mjpg_sockfd >= 0) {
+        auto mjpeg_data = mjpeg->getData();
+        char http_rsp[128];
+        int sz = sprintf(http_rsp, "\r\n--jpgboundary\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", mjpeg_data.size());
+        if (send(mjpg_sockfd, http_rsp, sz, MSG_NOSIGNAL) < 0) {
+            perror("socket write");
+            mjpg_sockfd = -1;
+            return;
+        }
+        if (send(mjpg_sockfd, mjpeg_data.data(), mjpeg_data.size(), MSG_NOSIGNAL) < 0) {
+            perror("socket write");
+            mjpg_sockfd = -1;
+            return;
+        }
+    }
+}
 
 int main(int argc, char **argv) {
     double fx = 4.2007635451376063e+02;
@@ -48,6 +120,8 @@ int main(int argc, char **argv) {
     ros::Publisher pp_pub = nh.advertise<sensor_msgs::PointCloud>("/feature_tracker/feature", 10);
     ros::Publisher imu_pub = nh.advertise<sensor_msgs::Imu>("/camera/imu", 100);
 
+    std::thread conn_t(wait_mjpg_conn);
+
     // Create pipeline
     dai::Pipeline pipeline;
 
@@ -57,18 +131,21 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
+    auto camRgb = pipeline.create<dai::node::ColorCamera>();
+    auto videnc = pipeline.create<dai::node::VideoEncoder>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
     auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
-
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
+    auto xout_mjpg = pipeline.create<dai::node::XLinkOut>();
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
+    xout_mjpg->setStreamName("mjpeg");
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
@@ -80,6 +157,12 @@ int main(int argc, char **argv) {
 
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
     featureTrackerRight->initialConfig.setNumTargetFeatures(16*5);
+    // By default the least mount of resources are allocated
+    // increasing it improves performance when optical flow is enabled
+    auto numShaves = 2;
+    auto numMemorySlices = 2;
+    featureTrackerLeft->setHardwareResources(numShaves, numMemorySlices);
+    featureTrackerRight->setHardwareResources(numShaves, numMemorySlices);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::KERNEL_5x5);
@@ -101,6 +184,11 @@ int main(int argc, char **argv) {
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(10);
 
+    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
+    camRgb->setFps(10);
+    videnc->setDefaultProfilePreset(10, dai::VideoEncoderProperties::Profile::MJPEG);
+    videnc->setQuality(20);
+
     // Linking
     monoLeft->out.link(depth->left);
     depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
@@ -113,12 +201,8 @@ int main(int argc, char **argv) {
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
 
-    // By default the least mount of resources are allocated
-    // increasing it improves performance when optical flow is enabled
-    auto numShaves = 2;
-    auto numMemorySlices = 2;
-    featureTrackerLeft->setHardwareResources(numShaves, numMemorySlices);
-    featureTrackerRight->setHardwareResources(numShaves, numMemorySlices);
+    camRgb->video.link(videnc->input);
+    videnc->bitstream.link(xout_mjpg->input);
 
     // Connect to device and start pipeline
     dai::Device device(pipeline);
@@ -130,10 +214,11 @@ int main(int argc, char **argv) {
     //device.setLogLevel(dai::LogLevel::TRACE);
 
     // Output queues used to receive the results
-    auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 8, false);
-    auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 8, false);
-    auto disp_queue = device.getOutputQueue("disparity", 8, false);
-    auto imuQueue = device.getOutputQueue("imu", 50, false);
+    auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
+    auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 1, false);
+    auto disp_queue = device.getOutputQueue("disparity", 1, false);
+    auto imuQueue = device.getOutputQueue("imu", 5, false);
+    device.getOutputQueue("mjpeg", 1, false)->addCallback(new_mjpg_frame);
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
     std::vector<std::uint8_t> disp_frame;
@@ -143,19 +228,20 @@ int main(int argc, char **argv) {
     std::map<int, int> lr_id_mapping;
 
     // Clear queue events
-    device.getQueueEvents();
+    //jakaskerl suggest remove this line
+    //https://discuss.luxonis.com/d/3484-getqueueevent-takes-much-additional-time/7
+    //device.getQueueEvents();
 
     while(true) {
-        std::this_thread::sleep_for(1ms);
+        auto q_name = device.getQueueEvent();
 
-        if (outputFeaturesLeftQueue->has()) {
+        if (q_name == "trackedFeaturesLeft") {
             auto data = outputFeaturesLeftQueue->get<dai::TrackedFeatures>();
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
             features_tp = data->getTimestamp();
             //std::cout << "ft latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
-        }
-        if (outputFeaturesRightQueue->has()) {
+        } else if (q_name == "trackedFeaturesRight") {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
             r_features = data->trackedFeatures;
             r_seq = data->getSequenceNum();
@@ -163,19 +249,18 @@ int main(int argc, char **argv) {
             for (const auto &feature : r_features) {
                 r_cur_features[feature.id] = feature.position;
             }
-        }
-        if (disp_queue->has()) {
+        } else if (q_name == "disparity") {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
             disp_frame = disp_data->getData();
             //std::cout << "stereo latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
-        }
-        if (imuQueue->has()) {
+        } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
             auto imuPackets = imuData->packets;
             for(const auto& imuPacket : imuPackets) {
                 auto& acc = imuPacket.acceleroMeter;
                 auto& gyro = imuPacket.gyroscope;
+                //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
                 sensor_msgs::Imu imu_msg;
                 imu_msg.header.stamp = ros::Time().fromNSec(std::chrono::duration_cast<std::chrono::nanoseconds>(acc.getTimestamp().time_since_epoch()).count());
                 imu_msg.linear_acceleration.x = acc.z;
