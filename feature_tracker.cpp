@@ -1,6 +1,7 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <sstream>
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -9,6 +10,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
+#include <opencv2/barcode.hpp>
 
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
@@ -28,10 +33,18 @@
 #define CAM_H 400
 #define PAIR_DIST_SQ 9
 #define MJPG_PORT 8080
+#define BUF_SZ 2048
+#define HTML_HEADER "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n"
+#define MJPG_HEADER "HTTP/1.0 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=jpgboundary\r\n\r\n"
+#define PLAIN_HEADER "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\n"
 
 int mjpg_sockfd = -1;
+cv::Ptr<cv::barcode::BarcodeDetector> bardet;
+std::vector<cv::Point2f> bar_corners;
+bool bar_found = false;
 
 void wait_mjpg_conn() {
+    char buf[BUF_SZ];
     // Create a socket
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd == -1) {
@@ -66,18 +79,53 @@ void wait_mjpg_conn() {
     printf("mjpg server listening for connections\n");
 
     while (true) {
-        mjpg_sockfd = accept(sockfd, (struct sockaddr *)&host_addr, (socklen_t *)&host_addrlen);
-        if (mjpg_sockfd >= 0) {
-            char http_rsp[] = "HTTP/1.0 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=jpgboundary\r\n\r\n";
-            printf("mjpg connection accepted\n");
-            write(mjpg_sockfd, http_rsp, sizeof(http_rsp)-1);
+        int new_sockfd = accept(sockfd, (struct sockaddr *)&host_addr, (socklen_t *)&host_addrlen);
+        if (new_sockfd >= 0) {
+            int val = read(new_sockfd, buf, BUF_SZ);
+            if (val > 0) {
+                //rcv_buf[val]=0;
+                //printf("rcv:%s\n", rcv_buf);
+                if (strncmp(buf, "GET / ", 6) == 0) {
+                    int html_fd = open("index.html", O_RDONLY);
+                    if (html_fd >= 0) {
+                        printf("web page requested\n");
+                        val = read(html_fd, buf, BUF_SZ);
+                        if (val > 0) {
+                            send(new_sockfd, HTML_HEADER, sizeof(HTML_HEADER)-1, MSG_NOSIGNAL);
+                            send(new_sockfd, buf, val, MSG_NOSIGNAL);
+                        }
+                        shutdown(new_sockfd, SHUT_RDWR);
+                        close(new_sockfd);
+                        close(html_fd);
+                    }
+                } else if (strncmp(buf, "GET /cam ", 9) == 0) {
+                    printf("cam img requested\n");
+                    write(new_sockfd, MJPG_HEADER, sizeof(MJPG_HEADER)-1);
+                    mjpg_sockfd = new_sockfd;
+                } else if (strncmp(buf, "GET /bar ", 9) == 0) {
+                    printf("barcode requested\n");
+                    send(new_sockfd, PLAIN_HEADER, sizeof(PLAIN_HEADER)-1, MSG_NOSIGNAL);
+                    if (bar_found) {
+                        std::stringstream ss;
+                        for (int i = 0; i < bar_corners.size(); ++i) {
+                            if (i != 0) ss << ",";
+                            ss << bar_corners[i].x << "," << bar_corners[i].y;
+                        }
+                        send(new_sockfd, ss.str().c_str(), ss.str().size(), MSG_NOSIGNAL);
+                    } else {
+                        send(new_sockfd, "no barcode", 10, MSG_NOSIGNAL);
+                    }
+                    shutdown(new_sockfd, SHUT_RDWR);
+                    close(new_sockfd);
+                }
+            }
         }
     }
 }
 
 void new_mjpg_frame(std::shared_ptr<dai::ADatatype> msg) {
-    dai::ImgFrame* mjpeg = static_cast<dai::ImgFrame*>(msg.get());
     if (mjpg_sockfd >= 0) {
+        dai::ImgFrame* mjpeg = static_cast<dai::ImgFrame*>(msg.get());
         auto mjpeg_data = mjpeg->getData();
         char http_rsp[128];
         int sz = sprintf(http_rsp, "\r\n--jpgboundary\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", mjpeg_data.size());
@@ -91,6 +139,18 @@ void new_mjpg_frame(std::shared_ptr<dai::ADatatype> msg) {
             mjpg_sockfd = -1;
             return;
         }
+    }
+}
+
+void new_img(std::shared_ptr<dai::ADatatype> msg) {
+    static int cc = 0;
+    if (++cc > 20) {
+        cc = 0;
+        dai::ImgFrame* img = static_cast<dai::ImgFrame*>(msg.get());
+        bar_found = bardet->detect(img->getFrame(), bar_corners);
+        /*if (bardet->detect(img->getFrame(), bar_corners)) {
+            std::cout<<"barcode found at " << bar_corners[0] << " \n";
+        }*/
     }
 }
 
@@ -122,6 +182,8 @@ int main(int argc, char **argv) {
 
     std::thread conn_t(wait_mjpg_conn);
 
+    bardet = cv::makePtr<cv::barcode::BarcodeDetector>();
+
     // Create pipeline
     dai::Pipeline pipeline;
 
@@ -131,7 +193,7 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
-    auto camRgb = pipeline.create<dai::node::ColorCamera>();
+    //auto camRgb = pipeline.create<dai::node::ColorCamera>();
     auto videnc = pipeline.create<dai::node::VideoEncoder>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
@@ -140,12 +202,14 @@ int main(int argc, char **argv) {
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
     auto xout_mjpg = pipeline.create<dai::node::XLinkOut>();
+    auto xout_img = pipeline.create<dai::node::XLinkOut>();
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
     xout_mjpg->setStreamName("mjpeg");
+    xout_img->setStreamName("img");
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
@@ -159,10 +223,8 @@ int main(int argc, char **argv) {
     featureTrackerRight->initialConfig.setNumTargetFeatures(16*5);
     // By default the least mount of resources are allocated
     // increasing it improves performance when optical flow is enabled
-    auto numShaves = 2;
-    auto numMemorySlices = 2;
-    featureTrackerLeft->setHardwareResources(numShaves, numMemorySlices);
-    featureTrackerRight->setHardwareResources(numShaves, numMemorySlices);
+    featureTrackerLeft->setHardwareResources(2, 2);
+    featureTrackerRight->setHardwareResources(2, 2);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::KERNEL_5x5);
@@ -184,8 +246,8 @@ int main(int argc, char **argv) {
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(10);
 
-    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
-    camRgb->setFps(10);
+    //camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
+    //camRgb->setFps(10);
     videnc->setDefaultProfilePreset(10, dai::VideoEncoderProperties::Profile::MJPEG);
     videnc->setQuality(20);
 
@@ -201,8 +263,10 @@ int main(int argc, char **argv) {
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
 
-    camRgb->video.link(videnc->input);
+    monoLeft->out.link(videnc->input);
     videnc->bitstream.link(xout_mjpg->input);
+
+    monoLeft->out.link(xout_img->input);
 
     // Connect to device and start pipeline
     dai::Device device(pipeline);
@@ -219,6 +283,7 @@ int main(int argc, char **argv) {
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 5, false);
     device.getOutputQueue("mjpeg", 1, false)->addCallback(new_mjpg_frame);
+    device.getOutputQueue("img", 1, false)->addCallback(new_img);
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
     std::vector<std::uint8_t> disp_frame;
@@ -240,11 +305,12 @@ int main(int argc, char **argv) {
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
             features_tp = data->getTimestamp();
-            //std::cout << "ft latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
+            //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
         } else if (q_name == "trackedFeaturesRight") {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
             r_features = data->trackedFeatures;
             r_seq = data->getSequenceNum();
+            //std::cout << "r ft " << r_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - data->getTimestamp()).count() << " ms\n";
             r_cur_features.clear();
             for (const auto &feature : r_features) {
                 r_cur_features[feature.id] = feature.position;
@@ -253,7 +319,7 @@ int main(int argc, char **argv) {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
             disp_frame = disp_data->getData();
-            //std::cout << "stereo latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
+            //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
         } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
             auto imuPackets = imuData->packets;
