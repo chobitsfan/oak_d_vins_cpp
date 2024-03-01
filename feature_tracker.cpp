@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/un.h>
 
 #include <opencv2/barcode.hpp>
 
@@ -20,14 +21,6 @@
 #include "deque"
 #include "unordered_map"
 #include "unordered_set"
-
-#include "ros/ros.h"
-#include "sensor_msgs/PointCloud.h"
-#include "geometry_msgs/Point32.h"
-#include "sensor_msgs/ChannelFloat32.h"
-#include "std_msgs/Header.h"
-#include "sensor_msgs/Imu.h"
-#include "geometry_msgs/Vector3.h"
 
 #define CAM_W 640
 #define CAM_H 400
@@ -42,6 +35,7 @@ int mjpg_sockfd = -1;
 cv::Ptr<cv::barcode::BarcodeDetector> bardet;
 std::vector<cv::Point2f> bar_corners;
 bool bar_found = false;
+double big_buf[12*1024/sizeof(double)];
 
 void wait_mjpg_conn() {
     char buf[BUF_SZ];
@@ -144,7 +138,7 @@ void new_mjpg_frame(std::shared_ptr<dai::ADatatype> msg) {
 
 void new_img(std::shared_ptr<dai::ADatatype> msg) {
     static int cc = 0;
-    if (++cc > 20) {
+    if (++cc > 10) {
         cc = 0;
         dai::ImgFrame* img = static_cast<dai::ImgFrame*>(msg.get());
         bar_found = bardet->detect(img->getFrame(), bar_corners);
@@ -175,14 +169,23 @@ int main(int argc, char **argv) {
     bool imu_ok = false;
     int ccc=0;
 
-    ros::init(argc, argv, "feature_tracker", ros::init_options::NoSigintHandler);
-    ros::NodeHandle nh;
-    ros::Publisher pp_pub = nh.advertise<sensor_msgs::PointCloud>("/feature_tracker/feature", 10);
-    ros::Publisher imu_pub = nh.advertise<sensor_msgs::Imu>("/camera/imu", 100);
-
     std::thread conn_t(wait_mjpg_conn);
 
     bardet = cv::makePtr<cv::barcode::BarcodeDetector>();
+
+    struct sockaddr_un ipc_local_addr, imu_addr, features_addr;
+    memset(&ipc_local_addr, 0, sizeof(struct sockaddr_un));
+    ipc_local_addr.sun_family = AF_UNIX;
+    strcpy(ipc_local_addr.sun_path, "/tmp/chobits_2222");
+    int ipc_sock = socket(AF_UNIX, SOCK_DGRAM, 0);
+    unlink("/tmp/chobits_2222");
+    bind(ipc_sock, (struct sockaddr*)&ipc_local_addr, sizeof(ipc_local_addr));
+    memset(&imu_addr, 0, sizeof(struct sockaddr_un));
+    imu_addr.sun_family = AF_UNIX;
+    strcpy(imu_addr.sun_path, "/tmp/chobits_imu");
+    memset(&features_addr, 0, sizeof(struct sockaddr_un));
+    features_addr.sun_family = AF_UNIX;
+    strcpy(features_addr.sun_path, "/tmp/chobits_features");
 
     // Create pipeline
     dai::Pipeline pipeline;
@@ -221,6 +224,12 @@ int main(int argc, char **argv) {
 
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
     featureTrackerRight->initialConfig.setNumTargetFeatures(16*5);
+    /*dai::RawFeatureTrackerConfig config = featureTrackerLeft->initialConfig.get();
+    config.cornerDetector.numMaxFeatures = 100;
+    featureTrackerLeft->initialConfig.set(config);
+    config = featureTrackerRight->initialConfig.get();
+    config.cornerDetector.numMaxFeatures = 100;
+    featureTrackerRight->initialConfig.set(config);*/
     // By default the least mount of resources are allocated
     // increasing it improves performance when optical flow is enabled
     featureTrackerLeft->setHardwareResources(2, 2);
@@ -327,7 +336,7 @@ int main(int argc, char **argv) {
                 auto& acc = imuPacket.acceleroMeter;
                 auto& gyro = imuPacket.gyroscope;
                 //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
-                sensor_msgs::Imu imu_msg;
+                /*sensor_msgs::Imu imu_msg;
                 imu_msg.header.stamp = ros::Time().fromNSec(std::chrono::duration_cast<std::chrono::nanoseconds>(acc.getTimestamp().time_since_epoch()).count());
                 imu_msg.linear_acceleration.x = acc.z;
                 imu_msg.linear_acceleration.y = acc.y;
@@ -335,7 +344,15 @@ int main(int argc, char **argv) {
                 imu_msg.angular_velocity.x = gyro.z;
                 imu_msg.angular_velocity.y = gyro.y;
                 imu_msg.angular_velocity.z = -gyro.x;
-                imu_pub.publish(imu_msg);
+                imu_pub.publish(imu_msg);*/
+                big_buf[0] = std::chrono::duration<double>(acc.getTimestamp().time_since_epoch()).count();
+                big_buf[1] = acc.z;
+                big_buf[2] = acc.y;
+                big_buf[3] = -acc.x;
+                big_buf[4] = gyro.z;
+                big_buf[5] = gyro.y;
+                big_buf[6] = -gyro.x;
+                sendto(ipc_sock, big_buf, 7*sizeof(double), 0, (struct sockaddr*)&imu_addr, sizeof(struct sockaddr_un));
             }
             if (!imu_ok) {
                 imu_ok = true;
@@ -349,9 +366,12 @@ int main(int argc, char **argv) {
             r_seq = -2;
             disp_seq = -3;
             std::map<int , dai::Point2f> features;
-            sensor_msgs::PointCloud pp_msg;
+            /*sensor_msgs::PointCloud pp_msg;
             pp_msg.header.stamp = ros::Time().fromNSec(std::chrono::duration_cast<std::chrono::nanoseconds>(features_tp.time_since_epoch()).count());
-            pp_msg.channels = std::vector<sensor_msgs::ChannelFloat32>(6, sensor_msgs::ChannelFloat32());
+            pp_msg.channels = std::vector<sensor_msgs::ChannelFloat32>(6, sensor_msgs::ChannelFloat32());*/
+            int c = 0;
+            big_buf[1] = std::chrono::duration<double>(features_tp.time_since_epoch()).count();
+            double* buf_ptr = big_buf + 2;
             for (const auto &l_feature : l_features) {
                 float x = l_feature.position.x;
                 float y = l_feature.position.y;
@@ -369,7 +389,7 @@ int main(int argc, char **argv) {
                             vx = (cur_un_x - prv_pos->second.x) / dt;
                             vy = (cur_un_y - prv_pos->second.y) / dt;
                         }
-                        geometry_msgs::Point32 p;
+                        /*geometry_msgs::Point32 p;
                         p.x = cur_un_x;
                         p.y = cur_un_y;
                         p.z = 1;
@@ -379,7 +399,14 @@ int main(int argc, char **argv) {
                         pp_msg.channels[2].values.push_back(x);
                         pp_msg.channels[3].values.push_back(y);
                         pp_msg.channels[4].values.push_back(vx);
-                        pp_msg.channels[5].values.push_back(vy);
+                        pp_msg.channels[5].values.push_back(vy);*/
+                        buf_ptr[0] = l_feature.id;
+                        buf_ptr[1] = cur_un_x;
+                        buf_ptr[2] = cur_un_y;
+                        buf_ptr[3] = x;
+                        buf_ptr[4] = y;
+                        buf_ptr[5] = vx;
+                        buf_ptr[6] = vy;
 
                         x = r_feature->second.x;
                         y = r_feature->second.y;
@@ -392,7 +419,7 @@ int main(int argc, char **argv) {
                             vx = (cur_un_x - prv_pos->second.x) / dt;
                             vy = (cur_un_y - prv_pos->second.y) / dt;
                         }
-                        p.x = cur_un_x;
+                        /*p.x = cur_un_x;
                         p.y = cur_un_y;
                         p.z = 1;
                         pp_msg.points.push_back(p);
@@ -401,7 +428,18 @@ int main(int argc, char **argv) {
                         pp_msg.channels[2].values.push_back(x);
                         pp_msg.channels[3].values.push_back(y);
                         pp_msg.channels[4].values.push_back(vx);
-                        pp_msg.channels[5].values.push_back(vy);
+                        pp_msg.channels[5].values.push_back(vy);*/
+                        buf_ptr[7] = cur_un_x;
+                        buf_ptr[8] = cur_un_y;
+                        buf_ptr[9] = x;
+                        buf_ptr[10] = y;
+                        buf_ptr[11] = vx;
+                        buf_ptr[12] = vy;
+
+                        if (c < 118) {
+                            ++c;
+                            buf_ptr += 13;
+                        }
 
                         continue;
                     }
@@ -424,7 +462,7 @@ int main(int argc, char **argv) {
                                 vx = (cur_un_x - prv_pos->second.x) / dt;
                                 vy = (cur_un_y - prv_pos->second.y) / dt;
                             }
-                            geometry_msgs::Point32 p;
+                            /*geometry_msgs::Point32 p;
                             p.x = cur_un_x;
                             p.y = cur_un_y;
                             p.z = 1;
@@ -434,7 +472,14 @@ int main(int argc, char **argv) {
                             pp_msg.channels[2].values.push_back(x);
                             pp_msg.channels[3].values.push_back(y);
                             pp_msg.channels[4].values.push_back(vx);
-                            pp_msg.channels[5].values.push_back(vy);
+                            pp_msg.channels[5].values.push_back(vy);*/
+                            buf_ptr[0] = l_feature.id;
+                            buf_ptr[1] = cur_un_x;
+                            buf_ptr[2] = cur_un_y;
+                            buf_ptr[3] = x;
+                            buf_ptr[4] = y;
+                            buf_ptr[5] = vx;
+                            buf_ptr[6] = vy;
 
                             x = r_feature.position.x;
                             y = r_feature.position.y;
@@ -447,7 +492,7 @@ int main(int argc, char **argv) {
                                 vx = (cur_un_x - prv_pos->second.x) / dt;
                                 vy = (cur_un_y - prv_pos->second.y) / dt;
                             }
-                            p.x = cur_un_x;
+                            /*p.x = cur_un_x;
                             p.y = cur_un_y;
                             p.z = 1;
                             pp_msg.points.push_back(p);
@@ -456,7 +501,18 @@ int main(int argc, char **argv) {
                             pp_msg.channels[2].values.push_back(x);
                             pp_msg.channels[3].values.push_back(y);
                             pp_msg.channels[4].values.push_back(vx);
-                            pp_msg.channels[5].values.push_back(vy);
+                            pp_msg.channels[5].values.push_back(vy);*/
+                            buf_ptr[7] = cur_un_x;
+                            buf_ptr[8] = cur_un_y;
+                            buf_ptr[9] = x;
+                            buf_ptr[10] = y;
+                            buf_ptr[11] = vx;
+                            buf_ptr[12] = vy;
+
+                            if (c < 118) {
+                                ++c;
+                                buf_ptr += 13;
+                            }
 
                             break;
                         }
@@ -466,9 +522,13 @@ int main(int argc, char **argv) {
             ccc++;
             if (ccc > 60) {
                 ccc = 0;
-                std::cout << "total latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
+                std::cout << "latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms, " << c << " features\n";
             }
-            if (pp_msg.points.size() > 0) pp_pub.publish(pp_msg);
+            //if (pp_msg.points.size() > 0) pp_pub.publish(pp_msg);
+            if (c > 0) {
+                big_buf[0] = c;
+                sendto(ipc_sock, big_buf, 13*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
+            }
             l_prv_features = features;
             prv_features_tp = features_tp;
             r_prv_features.clear();
