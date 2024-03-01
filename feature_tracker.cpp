@@ -31,6 +31,16 @@
 #define MJPG_HEADER "HTTP/1.0 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=jpgboundary\r\n\r\n"
 #define PLAIN_HEADER "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\n"
 
+struct MyPoint2d {
+    double x = 0;
+    double y = 0;
+    MyPoint2d() {}
+    MyPoint2d(double px, double py) {
+        x = px;
+        y = py;
+    }
+};
+
 int mjpg_sockfd = -1;
 cv::Ptr<cv::barcode::BarcodeDetector> bardet;
 std::vector<cv::Point2f> bar_corners;
@@ -297,7 +307,8 @@ int main(int argc, char **argv) {
     int l_seq = -1, r_seq = -2, disp_seq = -3;
     std::vector<std::uint8_t> disp_frame;
     std::vector<dai::TrackedFeature> l_features, r_features;
-    std::map<int, dai::Point2f> l_prv_features, r_prv_features, r_cur_features;
+    std::map<int, MyPoint2d> l_prv_features, r_prv_features;
+    std::map<int, dai::Point2f> r_cur_features;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> features_tp, prv_features_tp;
     std::map<int, int> lr_id_mapping;
 
@@ -365,7 +376,7 @@ int main(int argc, char **argv) {
             l_seq = -1;
             r_seq = -2;
             disp_seq = -3;
-            std::map<int , dai::Point2f> features;
+            std::map<int , MyPoint2d> features;
             /*sensor_msgs::PointCloud pp_msg;
             pp_msg.header.stamp = ros::Time().fromNSec(std::chrono::duration_cast<std::chrono::nanoseconds>(features_tp.time_since_epoch()).count());
             pp_msg.channels = std::vector<sensor_msgs::ChannelFloat32>(6, sensor_msgs::ChannelFloat32());*/
@@ -375,15 +386,15 @@ int main(int argc, char **argv) {
             for (const auto &l_feature : l_features) {
                 float x = l_feature.position.x;
                 float y = l_feature.position.y;
-                float cur_un_x = l_inv_k11 * x + l_inv_k13;
-                float cur_un_y = l_inv_k22 * y + l_inv_k23;
-                features[l_feature.id] = dai::Point2f(cur_un_x, cur_un_y);
+                double cur_un_x = l_inv_k11 * x + l_inv_k13;
+                double cur_un_y = l_inv_k22 * y + l_inv_k23;
+                features[l_feature.id] = MyPoint2d(cur_un_x, cur_un_y);
                 auto lr_id = lr_id_mapping.find(l_feature.id);
                 if (lr_id != lr_id_mapping.end()) {
                     auto r_feature = r_cur_features.find(lr_id->second);
                     if (r_feature != r_cur_features.end()) {
-                        float dt = std::chrono::duration<float>(features_tp - prv_features_tp).count();
-                        float vx = 0, vy = 0;
+                        double dt = std::chrono::duration<double>(features_tp - prv_features_tp).count();
+                        double vx = 0, vy = 0;
                         auto prv_pos = l_prv_features.find(l_feature.id);
                         if (prv_pos != l_prv_features.end()) {
                             vx = (cur_un_x - prv_pos->second.x) / dt;
@@ -455,8 +466,8 @@ int main(int argc, char **argv) {
                         float dx = x - disp - r_feature.position.x;
                         if (dy * dy + dx * dx <= PAIR_DIST_SQ) { //pair found
                             lr_id_mapping[l_feature.id] = r_feature.id;
-                            float dt = std::chrono::duration<float>(features_tp - prv_features_tp).count();
-                            float vx = 0, vy = 0;
+                            double dt = std::chrono::duration<double>(features_tp - prv_features_tp).count();
+                            double vx = 0, vy = 0;
                             auto prv_pos = l_prv_features.find(l_feature.id);
                             if (prv_pos != l_prv_features.end()) {
                                 vx = (cur_un_x - prv_pos->second.x) / dt;
@@ -533,7 +544,7 @@ int main(int argc, char **argv) {
             prv_features_tp = features_tp;
             r_prv_features.clear();
             for (const auto &r_feature : r_features) {
-                r_prv_features[r_feature.id] = dai::Point2f(r_inv_k11 * r_feature.position.x + r_inv_k13, r_inv_k22 * r_feature.position.y + r_inv_k23);
+                r_prv_features[r_feature.id] = MyPoint2d(r_inv_k11 * r_feature.position.x + r_inv_k13, r_inv_k22 * r_feature.position.y + r_inv_k23);
             }
             //auto t2 = std::chrono::steady_clock::now();
             //std::cout << pp_msg.points.size() << " points, " << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
