@@ -347,15 +347,6 @@ int main(int argc, char **argv) {
                 auto& acc = imuPacket.acceleroMeter;
                 auto& gyro = imuPacket.gyroscope;
                 //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
-                /*sensor_msgs::Imu imu_msg;
-                imu_msg.header.stamp = ros::Time().fromNSec(std::chrono::duration_cast<std::chrono::nanoseconds>(acc.getTimestamp().time_since_epoch()).count());
-                imu_msg.linear_acceleration.x = acc.z;
-                imu_msg.linear_acceleration.y = acc.y;
-                imu_msg.linear_acceleration.z = -acc.x;
-                imu_msg.angular_velocity.x = gyro.z;
-                imu_msg.angular_velocity.y = gyro.y;
-                imu_msg.angular_velocity.z = -gyro.x;
-                imu_pub.publish(imu_msg);*/
                 big_buf[0] = std::chrono::duration<double>(acc.getTimestamp().time_since_epoch()).count();
                 big_buf[1] = acc.z;
                 big_buf[2] = acc.y;
@@ -377,9 +368,6 @@ int main(int argc, char **argv) {
             r_seq = -2;
             disp_seq = -3;
             std::map<int , MyPoint2d> features;
-            /*sensor_msgs::PointCloud pp_msg;
-            pp_msg.header.stamp = ros::Time().fromNSec(std::chrono::duration_cast<std::chrono::nanoseconds>(features_tp.time_since_epoch()).count());
-            pp_msg.channels = std::vector<sensor_msgs::ChannelFloat32>(6, sensor_msgs::ChannelFloat32());*/
             int c = 0;
             big_buf[1] = std::chrono::duration<double>(features_tp.time_since_epoch()).count();
             double* buf_ptr = big_buf + 2;
@@ -400,17 +388,6 @@ int main(int argc, char **argv) {
                             vx = (cur_un_x - prv_pos->second.x) / dt;
                             vy = (cur_un_y - prv_pos->second.y) / dt;
                         }
-                        /*geometry_msgs::Point32 p;
-                        p.x = cur_un_x;
-                        p.y = cur_un_y;
-                        p.z = 1;
-                        pp_msg.points.push_back(p);
-                        pp_msg.channels[0].values.push_back(l_feature.id);
-                        pp_msg.channels[1].values.push_back(0);
-                        pp_msg.channels[2].values.push_back(x);
-                        pp_msg.channels[3].values.push_back(y);
-                        pp_msg.channels[4].values.push_back(vx);
-                        pp_msg.channels[5].values.push_back(vy);*/
                         buf_ptr[0] = l_feature.id;
                         buf_ptr[1] = cur_un_x;
                         buf_ptr[2] = cur_un_y;
@@ -430,16 +407,6 @@ int main(int argc, char **argv) {
                             vx = (cur_un_x - prv_pos->second.x) / dt;
                             vy = (cur_un_y - prv_pos->second.y) / dt;
                         }
-                        /*p.x = cur_un_x;
-                        p.y = cur_un_y;
-                        p.z = 1;
-                        pp_msg.points.push_back(p);
-                        pp_msg.channels[0].values.push_back(l_feature.id);
-                        pp_msg.channels[1].values.push_back(1);
-                        pp_msg.channels[2].values.push_back(x);
-                        pp_msg.channels[3].values.push_back(y);
-                        pp_msg.channels[4].values.push_back(vx);
-                        pp_msg.channels[5].values.push_back(vy);*/
                         buf_ptr[7] = cur_un_x;
                         buf_ptr[8] = cur_un_y;
                         buf_ptr[9] = x;
@@ -473,17 +440,6 @@ int main(int argc, char **argv) {
                                 vx = (cur_un_x - prv_pos->second.x) / dt;
                                 vy = (cur_un_y - prv_pos->second.y) / dt;
                             }
-                            /*geometry_msgs::Point32 p;
-                            p.x = cur_un_x;
-                            p.y = cur_un_y;
-                            p.z = 1;
-                            pp_msg.points.push_back(p);
-                            pp_msg.channels[0].values.push_back(l_feature.id);
-                            pp_msg.channels[1].values.push_back(0);
-                            pp_msg.channels[2].values.push_back(x);
-                            pp_msg.channels[3].values.push_back(y);
-                            pp_msg.channels[4].values.push_back(vx);
-                            pp_msg.channels[5].values.push_back(vy);*/
                             buf_ptr[0] = l_feature.id;
                             buf_ptr[1] = cur_un_x;
                             buf_ptr[2] = cur_un_y;
@@ -503,16 +459,6 @@ int main(int argc, char **argv) {
                                 vx = (cur_un_x - prv_pos->second.x) / dt;
                                 vy = (cur_un_y - prv_pos->second.y) / dt;
                             }
-                            /*p.x = cur_un_x;
-                            p.y = cur_un_y;
-                            p.z = 1;
-                            pp_msg.points.push_back(p);
-                            pp_msg.channels[0].values.push_back(l_feature.id);
-                            pp_msg.channels[1].values.push_back(1);
-                            pp_msg.channels[2].values.push_back(x);
-                            pp_msg.channels[3].values.push_back(y);
-                            pp_msg.channels[4].values.push_back(vx);
-                            pp_msg.channels[5].values.push_back(vy);*/
                             buf_ptr[7] = cur_un_x;
                             buf_ptr[8] = cur_un_y;
                             buf_ptr[9] = x;
@@ -535,7 +481,6 @@ int main(int argc, char **argv) {
                 ccc = 0;
                 std::cout << "latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms, " << c << " features\n";
             }
-            //if (pp_msg.points.size() > 0) pp_pub.publish(pp_msg);
             if (c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 13*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
