@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/un.h>
+#include <signal.h>
 
 #include <opencv2/barcode.hpp>
 
@@ -46,9 +47,16 @@ cv::Ptr<cv::barcode::BarcodeDetector> bardet;
 std::vector<cv::Point2f> bar_corners;
 bool bar_found = false;
 double big_buf[12*1024/sizeof(double)];
+bool gogogo = true;
 
 void wait_mjpg_conn() {
     char buf[BUF_SZ];
+
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGINT);
+    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
+
     // Create a socket
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd == -1) {
@@ -123,8 +131,9 @@ void wait_mjpg_conn() {
                     close(new_sockfd);
                 }
             }
-        }
+        } break;
     }
+    close(sockfd);
 }
 
 void new_mjpg_frame(std::shared_ptr<dai::ADatatype> msg) {
@@ -158,6 +167,10 @@ void new_img(std::shared_ptr<dai::ADatatype> msg) {
     }
 }
 
+void sig_func(int sig) {
+    gogogo = false;
+}
+
 int main(int argc, char **argv) {
     double fx = 4.2007635451376063e+02;
     double cx = 3.0906091871893943e+02;
@@ -178,6 +191,15 @@ int main(int argc, char **argv) {
 
     bool imu_ok = false;
     int ccc=0;
+
+    struct sigaction act;
+    memset(&act, 0, sizeof(act));
+    act.sa_handler = sig_func;
+    sigaction(SIGINT, &act, NULL);
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGINT);
+    sigprocmask(SIG_BLOCK, &signal_set, NULL);
 
     std::thread conn_t(wait_mjpg_conn);
 
@@ -317,7 +339,7 @@ int main(int argc, char **argv) {
     //https://discuss.luxonis.com/d/3484-getqueueevent-takes-much-additional-time/7
     //device.getQueueEvents();
 
-    while(true) {
+    while(gogogo) {
         auto q_name = device.getQueueEvent();
 
         if (q_name == "trackedFeaturesLeft") {
@@ -495,5 +517,12 @@ int main(int argc, char **argv) {
             //std::cout << pp_msg.points.size() << " points, " << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
         }
     }
+
+    close(ipc_sock);
+    printf("join thread\n");
+    //pthread_kill(conn_t.native_handle(), SIGINT);
+    conn_t.join();
+    printf("bye\n");
+
     return 0;
 }
