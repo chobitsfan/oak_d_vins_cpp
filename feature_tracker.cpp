@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <sys/un.h>
 #include <signal.h>
+#include <errno.h>
 
 #include <opencv2/barcode.hpp>
 
@@ -48,14 +49,15 @@ std::vector<cv::Point2f> bar_corners;
 bool bar_found = false;
 double big_buf[12*1024/sizeof(double)];
 bool gogogo = true;
+std::string barcode_txt = "barcode";
 
 void wait_mjpg_conn() {
     char buf[BUF_SZ];
 
-    sigset_t signal_set;
+    /*sigset_t signal_set;
     sigemptyset(&signal_set);
     sigaddset(&signal_set, SIGINT);
-    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
+    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);*/
 
     // Create a socket
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -71,7 +73,7 @@ void wait_mjpg_conn() {
     // Create the address to bind the socket to
     struct sockaddr_in host_addr;
     int host_addrlen = sizeof(host_addr);
-
+    memset(&host_addr, 0, sizeof(host_addr));
     host_addr.sin_family = AF_INET;
     host_addr.sin_port = htons(MJPG_PORT);
     host_addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -115,14 +117,14 @@ void wait_mjpg_conn() {
                     write(new_sockfd, MJPG_HEADER, sizeof(MJPG_HEADER)-1);
                     mjpg_sockfd = new_sockfd;
                 } else if (strncmp(buf, "GET /bar ", 9) == 0) {
-                    printf("barcode requested\n");
+                    //printf("barcode requested\n");
                     send(new_sockfd, PLAIN_HEADER, sizeof(PLAIN_HEADER)-1, MSG_NOSIGNAL);
                     if (bar_found) {
                         std::stringstream ss;
                         for (int i = 0; i < bar_corners.size(); ++i) {
-                            if (i != 0) ss << ",";
-                            ss << bar_corners[i].x << "," << bar_corners[i].y;
+                            ss << bar_corners[i].x << "," << bar_corners[i].y << ",";
                         }
+                        ss << barcode_txt;
                         send(new_sockfd, ss.str().c_str(), ss.str().size(), MSG_NOSIGNAL);
                     } else {
                         send(new_sockfd, "no barcode", 10, MSG_NOSIGNAL);
@@ -131,8 +133,11 @@ void wait_mjpg_conn() {
                     close(new_sockfd);
                 }
             }
-        } break;
+        } else {
+            if (errno == EINTR) break;
+        }
     }
+    printf("wait_mjpg_conn finished\n");
     close(sockfd);
 }
 
@@ -160,7 +165,19 @@ void new_img(std::shared_ptr<dai::ADatatype> msg) {
     if (++cc > 10) {
         cc = 0;
         dai::ImgFrame* img = static_cast<dai::ImgFrame*>(msg.get());
-        bar_found = bardet->detect(img->getFrame(), bar_corners);
+        auto frame = img->getFrame();
+        bar_found = bardet->detect(frame, bar_corners);
+        if (bar_found) {
+            std::vector<std::string> barcodes;
+            std::vector<cv::barcode::BarcodeType> bartypes;
+            bardet->decode(frame, bar_corners, barcodes, bartypes);
+            for (const auto& barcode : barcodes) {
+                if (!barcode.empty()) {
+                    std::cout << "barcode:" << barcode << "\n";
+                    barcode_txt = barcode;
+                }
+            }
+        }
         /*if (bardet->detect(img->getFrame(), bar_corners)) {
             std::cout<<"barcode found at " << bar_corners[0] << " \n";
         }*/
@@ -196,10 +213,10 @@ int main(int argc, char **argv) {
     memset(&act, 0, sizeof(act));
     act.sa_handler = sig_func;
     sigaction(SIGINT, &act, NULL);
-    sigset_t signal_set;
+    /*sigset_t signal_set;
     sigemptyset(&signal_set);
     sigaddset(&signal_set, SIGINT);
-    sigprocmask(SIG_BLOCK, &signal_set, NULL);
+    sigprocmask(SIG_BLOCK, &signal_set, NULL);*/
 
     std::thread conn_t(wait_mjpg_conn);
 
@@ -519,8 +536,8 @@ int main(int argc, char **argv) {
     }
 
     close(ipc_sock);
+    pthread_kill(conn_t.native_handle(), SIGINT);
     printf("join thread\n");
-    //pthread_kill(conn_t.native_handle(), SIGINT);
     conn_t.join();
     printf("bye\n");
 

@@ -27,24 +27,17 @@ function drawBB() {
                 ctx.lineTo(bb_pts[6], bb_pts[7]);
                 ctx.closePath();
                 ctx.stroke();
+                ctx.font = "20px serif";
+                ctx.fillText(bb_pts[8], bb_pts[2], bb_pts[3] - 10);
             }
         }
 	}
-}
-function myFunc() {
-    const c = document.getElementById("overlay");
-    const ctx = c.getContext("2d");
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(300, 150);
-    ctx.stroke();
 }
 </script>
 <div>
     <img src="/cam" style="position:absolute;z-index:1;" />
     <canvas id="overlay" width="640" height="400" style="position:relative;z-index:20;"/>
 </div>
-<button onClick="myFunc()">Hit me</button>
 
 </body>
 </html>
