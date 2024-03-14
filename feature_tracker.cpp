@@ -17,6 +17,7 @@
 #include <errno.h>
 
 #include <opencv2/barcode.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
@@ -120,12 +121,15 @@ void wait_mjpg_conn() {
                     //printf("barcode requested\n");
                     send(new_sockfd, PLAIN_HEADER, sizeof(PLAIN_HEADER)-1, MSG_NOSIGNAL);
                     if (bar_found) {
-                        std::stringstream ss;
+                        /*std::stringstream ss;
                         for (int i = 0; i < bar_corners.size(); ++i) {
                             ss << bar_corners[i].x << "," << bar_corners[i].y << ",";
                         }
                         ss << barcode_txt;
-                        send(new_sockfd, ss.str().c_str(), ss.str().size(), MSG_NOSIGNAL);
+                        send(new_sockfd, ss.str().c_str(), ss.str().size(), MSG_NOSIGNAL);*/
+                        int sz = snprintf(buf, BUF_SZ, "%d,%d,%d,%d,%d,%d,%d,%d,%s", (int)bar_corners[0].x, (int)bar_corners[0].y, (int)bar_corners[1].x, (int)bar_corners[1].y, 
+                            (int)bar_corners[2].x, (int)bar_corners[2].y, (int)bar_corners[3].x, (int)bar_corners[3].y, barcode_txt.c_str());
+                        send(new_sockfd, buf, sz, MSG_NOSIGNAL);
                     } else {
                         send(new_sockfd, "no barcode", 10, MSG_NOSIGNAL);
                     }
@@ -161,6 +165,7 @@ void new_mjpg_frame(std::shared_ptr<dai::ADatatype> msg) {
 }
 
 void new_img(std::shared_ptr<dai::ADatatype> msg) {
+    static int nn = 0;
     static int cc = 0;
     if (++cc > 10) {
         cc = 0;
@@ -171,16 +176,21 @@ void new_img(std::shared_ptr<dai::ADatatype> msg) {
             std::vector<std::string> barcodes;
             std::vector<cv::barcode::BarcodeType> bartypes;
             bardet->decode(frame, bar_corners, barcodes, bartypes);
-            for (const auto& barcode : barcodes) {
+            if (barcodes.empty() || barcodes[0].empty()) {
+                barcode_txt = "barcode";
+            } else {
+                barcode_txt = barcodes[0];
+            }
+            char f_buf[256];
+            sprintf(f_buf, "%d_%s.png", ++nn, barcode_txt.c_str());
+            cv::imwrite(f_buf, frame);
+            /*for (const auto& barcode : barcodes) {
                 if (!barcode.empty()) {
                     std::cout << "barcode:" << barcode << "\n";
                     barcode_txt = barcode;
                 }
-            }
+            }*/
         }
-        /*if (bardet->detect(img->getFrame(), bar_corners)) {
-            std::cout<<"barcode found at " << bar_corners[0] << " \n";
-        }*/
     }
 }
 
