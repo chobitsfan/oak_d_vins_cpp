@@ -51,6 +51,7 @@ bool bar_found = false;
 double big_buf[12*1024/sizeof(double)];
 bool gogogo = true;
 std::string barcode_txt = "barcode";
+bool need_decode = false;
 
 void wait_mjpg_conn() {
     char buf[BUF_SZ];
@@ -173,23 +174,51 @@ void new_img(std::shared_ptr<dai::ADatatype> msg) {
         auto frame = img->getFrame();
         bar_found = bardet->detect(frame, bar_corners);
         if (bar_found) {
-            std::vector<std::string> barcodes;
+            need_decode = true;
+            /*std::vector<std::string> barcodes;
             std::vector<cv::barcode::BarcodeType> bartypes;
             bardet->decode(frame, bar_corners, barcodes, bartypes);
             if (barcodes.empty() || barcodes[0].empty()) {
                 barcode_txt = "barcode";
             } else {
                 barcode_txt = barcodes[0];
-            }
-            char f_buf[256];
-            sprintf(f_buf, "%d_%s.png", ++nn, barcode_txt.c_str());
-            cv::imwrite(f_buf, frame);
+            }*/
+            //char f_buf[256];
+            //sprintf(f_buf, "%d_%s.png", ++nn, barcode_txt.c_str());
+            //cv::imwrite(f_buf, frame);
             /*for (const auto& barcode : barcodes) {
                 if (!barcode.empty()) {
                     std::cout << "barcode:" << barcode << "\n";
                     barcode_txt = barcode;
                 }
             }*/
+        }
+    }
+}
+
+void new_big_img(std::shared_ptr<dai::ADatatype> msg) {
+    static int nn = 0;
+    if (need_decode) {
+        need_decode = false;
+        dai::ImgFrame* img = static_cast<dai::ImgFrame*>(msg.get());
+        auto frame = img->getFrame();
+        //auto croped = frame(cv::Rect(bar_corners[1].x*3, bar_corners[1].y*3, (bar_corners[2].x - bar_corners[1].x)*3, (bar_corners[0].y - bar_corners[1].y)*3));
+        //cv::imwrite("croped.png", croped);
+        //cv::imwrite("full.png", frame);
+        std::vector<cv::Point2f> bar_corners_b;
+        std::vector<std::string> barcodes;
+        std::vector<cv::barcode::BarcodeType> bartypes;
+        for (const auto& bar_corner : bar_corners) {
+            bar_corners_b.emplace_back(bar_corner.x*3, bar_corner.y*3);
+        }
+        bardet->decode(frame, bar_corners_b, barcodes, bartypes);
+        if (barcodes.empty() || barcodes[0].empty()) {
+            barcode_txt = "barcode";
+            char f_buf[256];
+            sprintf(f_buf, "%d_barcode.png", ++nn);
+            cv::imwrite(f_buf, frame);
+        } else {
+            barcode_txt = barcodes[0];
         }
     }
 }
@@ -255,8 +284,10 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
-    //auto camRgb = pipeline.create<dai::node::ColorCamera>();
+    auto camRgb = pipeline.create<dai::node::ColorCamera>();
     auto videnc = pipeline.create<dai::node::VideoEncoder>();
+    auto manip = pipeline.create<dai::node::ImageManip>();
+    auto manip_b = pipeline.create<dai::node::ImageManip>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
     auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
@@ -264,14 +295,18 @@ int main(int argc, char **argv) {
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
     auto xout_mjpg = pipeline.create<dai::node::XLinkOut>();
-    auto xout_img = pipeline.create<dai::node::XLinkOut>();
+    //auto xout_img = pipeline.create<dai::node::XLinkOut>();
+    auto xout_manip = pipeline.create<dai::node::XLinkOut>();
+    auto xout_manip_b = pipeline.create<dai::node::XLinkOut>();
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
     xout_mjpg->setStreamName("mjpeg");
-    xout_img->setStreamName("img");
+    //xout_img->setStreamName("img");
+    xout_manip->setStreamName("manip");
+    xout_manip_b->setStreamName("manip_b");
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
@@ -314,8 +349,21 @@ int main(int argc, char **argv) {
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(10);
 
-    //camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
-    //camRgb->setFps(10);
+    camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
+    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
+    camRgb->setFps(10);
+    camRgb->setIsp3aFps(5);
+    //camRgb->initialControl.setAutoFocusMode(dai::CameraControl::AutoFocusMode::OFF);
+    //camRgb->initialControl.setManualFocus(125);
+    //camRgb->setPreviewSize(640,360);
+    //camRgb->setVideoSize(640,360);
+    //camRgb->setIspScale(1, 2);
+    manip->initialConfig.setFrameType(dai::RawImgFrame::Type::RAW8);
+    manip->initialConfig.setResize(640,360);
+    manip->setMaxOutputFrameSize(640*360);
+    manip_b->initialConfig.setFrameType(dai::RawImgFrame::Type::RAW8);
+    manip_b->setMaxOutputFrameSize(1920*1080);
+
     videnc->setDefaultProfilePreset(10, dai::VideoEncoderProperties::Profile::MJPEG);
     videnc->setQuality(20);
 
@@ -331,10 +379,16 @@ int main(int argc, char **argv) {
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
 
-    monoLeft->out.link(videnc->input);
+    //camRgb->video.link(videnc->input);
     videnc->bitstream.link(xout_mjpg->input);
 
-    monoLeft->out.link(xout_img->input);
+    //monoLeft->out.link(xout_img->input);
+
+    camRgb->isp.link(manip->inputImage);
+    camRgb->isp.link(manip_b->inputImage);
+    manip->out.link(videnc->input);
+    manip->out.link(xout_manip->input);
+    manip_b->out.link(xout_manip_b->input);
 
     // Connect to device and start pipeline
     dai::Device device(pipeline);
@@ -342,8 +396,8 @@ int main(int argc, char **argv) {
     std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
     std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
 
-    //device.setLogOutputLevel(dai::LogLevel::TRACE);
-    //device.setLogLevel(dai::LogLevel::TRACE);
+    //device.setLogOutputLevel(dai::LogLevel::DEBUG);
+    //device.setLogLevel(dai::LogLevel::DEBUG);
 
     // Output queues used to receive the results
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
@@ -351,7 +405,9 @@ int main(int argc, char **argv) {
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 5, false);
     device.getOutputQueue("mjpeg", 1, false)->addCallback(new_mjpg_frame);
-    device.getOutputQueue("img", 1, false)->addCallback(new_img);
+    //device.getOutputQueue("img", 1, false)->addCallback(new_img);
+    device.getOutputQueue("manip", 1, false)->addCallback(new_img);
+    device.getOutputQueue("manip_b", 1, false)->addCallback(new_big_img);
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
     std::vector<std::uint8_t> disp_frame;
