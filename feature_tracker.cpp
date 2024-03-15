@@ -1,7 +1,6 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
-#include <sstream>
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -14,10 +13,6 @@
 #include <fcntl.h>
 #include <sys/un.h>
 #include <signal.h>
-#include <errno.h>
-
-#include <opencv2/barcode.hpp>
-#include <opencv2/imgcodecs.hpp>
 
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
@@ -28,11 +23,6 @@
 #define CAM_W 640
 #define CAM_H 400
 #define PAIR_DIST_SQ 9
-#define MJPG_PORT 8080
-#define BUF_SZ 2048
-#define HTML_HEADER "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n"
-#define MJPG_HEADER "HTTP/1.0 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=jpgboundary\r\n\r\n"
-#define PLAIN_HEADER "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\n"
 
 struct MyPoint2d {
     double x = 0;
@@ -44,184 +34,8 @@ struct MyPoint2d {
     }
 };
 
-int mjpg_sockfd = -1;
-cv::Ptr<cv::barcode::BarcodeDetector> bardet;
-std::vector<cv::Point2f> bar_corners;
-bool bar_found = false;
 double big_buf[12*1024/sizeof(double)];
 bool gogogo = true;
-std::string barcode_txt = "barcode";
-bool need_decode = false;
-
-void wait_mjpg_conn() {
-    char buf[BUF_SZ];
-
-    /*sigset_t signal_set;
-    sigemptyset(&signal_set);
-    sigaddset(&signal_set, SIGINT);
-    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);*/
-
-    // Create a socket
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd == -1) {
-        perror("webserver (socket)");
-        return;
-    }
-    printf("socket created successfully\n");
-
-    int opt = 1;
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt));
-
-    // Create the address to bind the socket to
-    struct sockaddr_in host_addr;
-    int host_addrlen = sizeof(host_addr);
-    memset(&host_addr, 0, sizeof(host_addr));
-    host_addr.sin_family = AF_INET;
-    host_addr.sin_port = htons(MJPG_PORT);
-    host_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    // Bind the socket to the address
-    if (bind(sockfd, (struct sockaddr *)&host_addr, host_addrlen) != 0) {
-        perror("webserver (bind)");
-        return;
-    }
-    printf("socket successfully bound to address\n");
-
-    // Listen for incoming connections
-    if (listen(sockfd, SOMAXCONN) != 0) {
-        perror("webserver (listen)");
-        return;
-    }
-    printf("mjpg server listening for connections\n");
-
-    while (true) {
-        int new_sockfd = accept(sockfd, (struct sockaddr *)&host_addr, (socklen_t *)&host_addrlen);
-        if (new_sockfd >= 0) {
-            int val = read(new_sockfd, buf, BUF_SZ);
-            if (val > 0) {
-                //rcv_buf[val]=0;
-                //printf("rcv:%s\n", rcv_buf);
-                if (strncmp(buf, "GET / ", 6) == 0) {
-                    int html_fd = open("index.html", O_RDONLY);
-                    if (html_fd >= 0) {
-                        printf("web page requested\n");
-                        val = read(html_fd, buf, BUF_SZ);
-                        if (val > 0) {
-                            send(new_sockfd, HTML_HEADER, sizeof(HTML_HEADER)-1, MSG_NOSIGNAL);
-                            send(new_sockfd, buf, val, MSG_NOSIGNAL);
-                        }
-                        shutdown(new_sockfd, SHUT_RDWR);
-                        close(new_sockfd);
-                        close(html_fd);
-                    }
-                } else if (strncmp(buf, "GET /cam ", 9) == 0) {
-                    printf("cam img requested\n");
-                    write(new_sockfd, MJPG_HEADER, sizeof(MJPG_HEADER)-1);
-                    mjpg_sockfd = new_sockfd;
-                } else if (strncmp(buf, "GET /bar ", 9) == 0) {
-                    //printf("barcode requested\n");
-                    send(new_sockfd, PLAIN_HEADER, sizeof(PLAIN_HEADER)-1, MSG_NOSIGNAL);
-                    if (bar_found) {
-                        /*std::stringstream ss;
-                        for (int i = 0; i < bar_corners.size(); ++i) {
-                            ss << bar_corners[i].x << "," << bar_corners[i].y << ",";
-                        }
-                        ss << barcode_txt;
-                        send(new_sockfd, ss.str().c_str(), ss.str().size(), MSG_NOSIGNAL);*/
-                        int sz = snprintf(buf, BUF_SZ, "%d,%d,%d,%d,%d,%d,%d,%d,%s", (int)bar_corners[0].x, (int)bar_corners[0].y, (int)bar_corners[1].x, (int)bar_corners[1].y, 
-                            (int)bar_corners[2].x, (int)bar_corners[2].y, (int)bar_corners[3].x, (int)bar_corners[3].y, barcode_txt.c_str());
-                        send(new_sockfd, buf, sz, MSG_NOSIGNAL);
-                    } else {
-                        send(new_sockfd, "no barcode", 10, MSG_NOSIGNAL);
-                    }
-                    shutdown(new_sockfd, SHUT_RDWR);
-                    close(new_sockfd);
-                }
-            }
-        } else {
-            if (errno == EINTR) break;
-        }
-    }
-    printf("wait_mjpg_conn finished\n");
-    close(sockfd);
-}
-
-void new_mjpg_frame(std::shared_ptr<dai::ADatatype> msg) {
-    if (mjpg_sockfd >= 0) {
-        dai::ImgFrame* mjpeg = static_cast<dai::ImgFrame*>(msg.get());
-        auto mjpeg_data = mjpeg->getData();
-        char http_rsp[128];
-        int sz = sprintf(http_rsp, "\r\n--jpgboundary\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", mjpeg_data.size());
-        if (send(mjpg_sockfd, http_rsp, sz, MSG_NOSIGNAL) < 0) {
-            perror("socket write");
-            mjpg_sockfd = -1;
-            return;
-        }
-        if (send(mjpg_sockfd, mjpeg_data.data(), mjpeg_data.size(), MSG_NOSIGNAL) < 0) {
-            perror("socket write");
-            mjpg_sockfd = -1;
-            return;
-        }
-    }
-}
-
-void new_img(std::shared_ptr<dai::ADatatype> msg) {
-    static int nn = 0;
-    static int cc = 0;
-    if (++cc > 10) {
-        cc = 0;
-        dai::ImgFrame* img = static_cast<dai::ImgFrame*>(msg.get());
-        auto frame = img->getFrame();
-        bar_found = bardet->detect(frame, bar_corners);
-        if (bar_found) {
-            need_decode = true;
-            /*std::vector<std::string> barcodes;
-            std::vector<cv::barcode::BarcodeType> bartypes;
-            bardet->decode(frame, bar_corners, barcodes, bartypes);
-            if (barcodes.empty() || barcodes[0].empty()) {
-                barcode_txt = "barcode";
-            } else {
-                barcode_txt = barcodes[0];
-            }*/
-            //char f_buf[256];
-            //sprintf(f_buf, "%d_%s.png", ++nn, barcode_txt.c_str());
-            //cv::imwrite(f_buf, frame);
-            /*for (const auto& barcode : barcodes) {
-                if (!barcode.empty()) {
-                    std::cout << "barcode:" << barcode << "\n";
-                    barcode_txt = barcode;
-                }
-            }*/
-        }
-    }
-}
-
-void new_big_img(std::shared_ptr<dai::ADatatype> msg) {
-    static int nn = 0;
-    if (need_decode) {
-        need_decode = false;
-        dai::ImgFrame* img = static_cast<dai::ImgFrame*>(msg.get());
-        auto frame = img->getFrame();
-        //auto croped = frame(cv::Rect(bar_corners[1].x*3, bar_corners[1].y*3, (bar_corners[2].x - bar_corners[1].x)*3, (bar_corners[0].y - bar_corners[1].y)*3));
-        //cv::imwrite("croped.png", croped);
-        //cv::imwrite("full.png", frame);
-        std::vector<cv::Point2f> bar_corners_b;
-        std::vector<std::string> barcodes;
-        std::vector<cv::barcode::BarcodeType> bartypes;
-        for (const auto& bar_corner : bar_corners) {
-            bar_corners_b.emplace_back(bar_corner.x*3, bar_corner.y*3);
-        }
-        bardet->decode(frame, bar_corners_b, barcodes, bartypes);
-        if (barcodes.empty() || barcodes[0].empty()) {
-            barcode_txt = "barcode";
-            char f_buf[256];
-            sprintf(f_buf, "%d_barcode.png", ++nn);
-            cv::imwrite(f_buf, frame);
-        } else {
-            barcode_txt = barcodes[0];
-        }
-    }
-}
 
 void sig_func(int sig) {
     gogogo = false;
@@ -252,14 +66,6 @@ int main(int argc, char **argv) {
     memset(&act, 0, sizeof(act));
     act.sa_handler = sig_func;
     sigaction(SIGINT, &act, NULL);
-    /*sigset_t signal_set;
-    sigemptyset(&signal_set);
-    sigaddset(&signal_set, SIGINT);
-    sigprocmask(SIG_BLOCK, &signal_set, NULL);*/
-
-    std::thread conn_t(wait_mjpg_conn);
-
-    bardet = cv::makePtr<cv::barcode::BarcodeDetector>();
 
     struct sockaddr_un ipc_local_addr, imu_addr, features_addr;
     memset(&ipc_local_addr, 0, sizeof(struct sockaddr_un));
@@ -284,29 +90,17 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
-    auto camRgb = pipeline.create<dai::node::ColorCamera>();
-    auto videnc = pipeline.create<dai::node::VideoEncoder>();
-    auto manip = pipeline.create<dai::node::ImageManip>();
-    auto manip_b = pipeline.create<dai::node::ImageManip>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
     auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
-    auto xout_mjpg = pipeline.create<dai::node::XLinkOut>();
-    //auto xout_img = pipeline.create<dai::node::XLinkOut>();
-    auto xout_manip = pipeline.create<dai::node::XLinkOut>();
-    auto xout_manip_b = pipeline.create<dai::node::XLinkOut>();
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
-    xout_mjpg->setStreamName("mjpeg");
-    //xout_img->setStreamName("img");
-    xout_manip->setStreamName("manip");
-    xout_manip_b->setStreamName("manip_b");
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
@@ -349,24 +143,6 @@ int main(int argc, char **argv) {
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(10);
 
-    camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
-    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
-    camRgb->setFps(10);
-    camRgb->setIsp3aFps(5);
-    //camRgb->initialControl.setAutoFocusMode(dai::CameraControl::AutoFocusMode::OFF);
-    //camRgb->initialControl.setManualFocus(125);
-    //camRgb->setPreviewSize(640,360);
-    //camRgb->setVideoSize(640,360);
-    //camRgb->setIspScale(1, 2);
-    manip->initialConfig.setFrameType(dai::RawImgFrame::Type::RAW8);
-    manip->initialConfig.setResize(640,360);
-    manip->setMaxOutputFrameSize(640*360);
-    manip_b->initialConfig.setFrameType(dai::RawImgFrame::Type::RAW8);
-    manip_b->setMaxOutputFrameSize(1920*1080);
-
-    videnc->setDefaultProfilePreset(10, dai::VideoEncoderProperties::Profile::MJPEG);
-    videnc->setQuality(20);
-
     // Linking
     monoLeft->out.link(depth->left);
     depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
@@ -378,17 +154,6 @@ int main(int argc, char **argv) {
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
-
-    //camRgb->video.link(videnc->input);
-    videnc->bitstream.link(xout_mjpg->input);
-
-    //monoLeft->out.link(xout_img->input);
-
-    camRgb->isp.link(manip->inputImage);
-    camRgb->isp.link(manip_b->inputImage);
-    manip->out.link(videnc->input);
-    manip->out.link(xout_manip->input);
-    manip_b->out.link(xout_manip_b->input);
 
     // Connect to device and start pipeline
     dai::Device device(pipeline);
@@ -404,10 +169,6 @@ int main(int argc, char **argv) {
     auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 5, false);
-    device.getOutputQueue("mjpeg", 1, false)->addCallback(new_mjpg_frame);
-    //device.getOutputQueue("img", 1, false)->addCallback(new_img);
-    device.getOutputQueue("manip", 1, false)->addCallback(new_img);
-    device.getOutputQueue("manip_b", 1, false)->addCallback(new_big_img);
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
     std::vector<std::uint8_t> disp_frame;
@@ -602,9 +363,6 @@ int main(int argc, char **argv) {
     }
 
     close(ipc_sock);
-    pthread_kill(conn_t.native_handle(), SIGINT);
-    printf("join thread\n");
-    conn_t.join();
     printf("bye\n");
 
     return 0;
