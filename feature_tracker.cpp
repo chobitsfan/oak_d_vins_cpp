@@ -14,6 +14,8 @@
 #include <sys/un.h>
 #include <signal.h>
 
+#include <opencv2/calib3d.hpp>
+
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
 #include "deque"
@@ -41,24 +43,43 @@ void sig_func(int sig) {
     gogogo = false;
 }
 
-int main(int argc, char **argv) {
-    double fx = 4.2007635451376063e+02;
-    double cx = 3.0906091871893943e+02;
-    double fy = 4.1970786993146550e+02;
-    double cy = 2.0014588000163775e+02;
-    double l_inv_k11 = 1.0 / fx;
-    double l_inv_k13 = -cx / fx;
-    double l_inv_k22 = 1.0 / fy;
-    double l_inv_k23 = -cy / fy;
-    fx = 4.1911737221609309e+02;
-    cx = 3.1094101439493375e+02;
-    fy = 4.1911302233054698e+02;
-    cy = 1.9966812289233278e+02;
-    double r_inv_k11 = 1.0 / fx;
-    double r_inv_k13 = -cx / fx;
-    double r_inv_k22 = 1.0 / fy;
-    double r_inv_k23 = -cy / fy;
+void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy) {
+    auto l_intrinsics = calibData.getCameraIntrinsics(dai::CameraBoardSocket::CAM_B, 640, 400);
+    float data[9];
+    int i = -1;
+    for (auto row : l_intrinsics) {
+        for (auto val : row) {
+            data[++i] = val;
+        }
+    }
+    cv::Mat l_m = cv::Mat(3, 3, CV_32FC1, data);
 
+    auto r_intrinsics = calibData.getCameraIntrinsics(dai::CameraBoardSocket::CAM_C, 640, 400);
+    i = -1;
+    for (auto row : r_intrinsics) {
+        for (auto val : row) {
+            data[++i] = val;
+        }
+    }
+    cv::Mat r_m = cv::Mat(3, 3, CV_32FC1, data);
+
+    auto l_d = calibData.getDistortionCoefficients(dai::CameraBoardSocket::CAM_B);
+    auto r_d = calibData.getDistortionCoefficients(dai::CameraBoardSocket::CAM_C);
+    auto extrinsics = calibData.getCameraExtrinsics(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C);
+
+    cv::Mat r = (cv::Mat_<double>(3,3) << extrinsics[0][0], extrinsics[0][1], extrinsics[0][2], extrinsics[1][0], extrinsics[1][1], extrinsics[1][2], extrinsics[2][0], extrinsics[2][1], extrinsics[2][2]);
+    cv::Mat t = (cv::Mat_<double>(3,1) << extrinsics[0][3], extrinsics[1][3], extrinsics[2][3]);
+    cv::Mat r1, r2, p1, p2, q;
+    cv::stereoRectify(l_m, l_d, r_m, r_d, cv::Size(640, 400), r, t, r1, r2, p1, p2, q, cv::CALIB_ZERO_DISPARITY, 0);
+
+    std::cout << "P1\n" << p1 << "\nP2\n" << p2 << "\n";
+
+    *f = p1.at<double>(0, 0);
+    *cx = p1.at<double>(0, 2);
+    *cy = p1.at<double>(1, 2);
+}
+
+int main(int argc, char **argv) {
     bool imu_ok = false;
     int ccc=0;
     enum DEV_TYPE {OAK_D, OAK_D_PRO} dev_type;
@@ -162,6 +183,18 @@ int main(int argc, char **argv) {
     std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
     std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
     if (device.getDeviceName() == "OAK-D") dev_type = OAK_D; else dev_type = OAK_D_PRO;
+
+    dai::CalibrationHandler calibData = device.readCalibration2();
+    double f, cx, cy;
+    calc_rect_cam_intri(calibData, &f, &cx, &cy);
+    double l_inv_k11 = 1.0 / f;
+    double l_inv_k13 = -cx / f;
+    double l_inv_k22 = 1.0 / f;
+    double l_inv_k23 = -cy / f;
+    double r_inv_k11 = 1.0 / f;
+    double r_inv_k13 = -cx / f;
+    double r_inv_k22 = 1.0 / f;
+    double r_inv_k23 = -cy / f;
 
     //device.setLogOutputLevel(dai::LogLevel::DEBUG);
     //device.setLogLevel(dai::LogLevel::DEBUG);
@@ -359,7 +392,7 @@ int main(int argc, char **argv) {
                 ccc = 0;
                 std::cout << "latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms, " << c << " features\n";
             }
-            if (c > 0) {
+            if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 13*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
             }
