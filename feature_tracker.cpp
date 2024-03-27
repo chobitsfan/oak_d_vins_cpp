@@ -61,6 +61,7 @@ int main(int argc, char **argv) {
 
     bool imu_ok = false;
     int ccc=0;
+    enum DEV_TYPE {OAK_D, OAK_D_PRO} dev_type;
 
     struct sigaction act;
     memset(&act, 0, sizeof(act));
@@ -160,6 +161,7 @@ int main(int argc, char **argv) {
 
     std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
     std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
+    if (device.getDeviceName() == "OAK-D") dev_type = OAK_D; else dev_type = OAK_D_PRO;
 
     //device.setLogOutputLevel(dai::LogLevel::DEBUG);
     //device.setLogLevel(dai::LogLevel::DEBUG);
@@ -214,12 +216,22 @@ int main(int argc, char **argv) {
                 auto& gyro = imuPacket.gyroscope;
                 //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
                 big_buf[0] = std::chrono::duration<double>(acc.getTimestamp().time_since_epoch()).count();
-                big_buf[1] = acc.z;
-                big_buf[2] = acc.y;
-                big_buf[3] = -acc.x;
-                big_buf[4] = gyro.z;
-                big_buf[5] = gyro.y;
-                big_buf[6] = -gyro.x;
+                // translate to ros frame, easier to understand in rviz
+                if (dev_type == OAK_D) {
+                    big_buf[1] = acc.z;
+                    big_buf[2] = acc.y;
+                    big_buf[3] = -acc.x;
+                    big_buf[4] = gyro.z;
+                    big_buf[5] = gyro.y;
+                    big_buf[6] = -gyro.x;
+                } else {
+                    big_buf[1] = -acc.z;
+                    big_buf[2] = -acc.y;
+                    big_buf[3] = -acc.x;
+                    big_buf[4] = -gyro.z;
+                    big_buf[5] = -gyro.y;
+                    big_buf[6] = -gyro.x;
+                }
                 sendto(ipc_sock, big_buf, 7*sizeof(double), 0, (struct sockaddr*)&imu_addr, sizeof(struct sockaddr_un));
             }
             if (!imu_ok) {
