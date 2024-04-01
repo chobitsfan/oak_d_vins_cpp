@@ -225,7 +225,7 @@ int main(int argc, char **argv) {
             auto data = outputFeaturesLeftQueue->get<dai::TrackedFeatures>();
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
-            features_tp = data->getTimestamp();
+            features_tp = data->getTimestampDevice();
             //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
         } else if (q_name == "trackedFeaturesRight") {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
@@ -248,7 +248,7 @@ int main(int argc, char **argv) {
                 auto& acc = imuPacket.acceleroMeter;
                 auto& gyro = imuPacket.gyroscope;
                 //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
-                big_buf[0] = std::chrono::duration<double>(acc.getTimestamp().time_since_epoch()).count();
+                big_buf[0] = std::chrono::duration<double>(gyro.getTimestampDevice().time_since_epoch()).count();
                 // translate to ros frame, easier to understand in rviz
                 if (dev_type == OAK_D) {
                     big_buf[1] = acc.z;
@@ -390,7 +390,7 @@ int main(int argc, char **argv) {
             ccc++;
             if (ccc > 60) {
                 ccc = 0;
-                std::cout << "latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms, " << c << " features\n";
+                std::cout << c << " features\n";
             }
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
