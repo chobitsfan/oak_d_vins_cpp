@@ -210,8 +210,9 @@ int main(int argc, char **argv) {
     std::vector<dai::TrackedFeature> l_features, r_features;
     std::map<int, MyPoint2d> l_prv_features, r_prv_features;
     std::map<int, dai::Point2f> r_cur_features;
-    std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> features_tp, prv_features_tp;
+    double features_ts, prv_features_ts;
     std::map<int, int> lr_id_mapping;
+    double latest_exp_t = 0;
 
     // Clear queue events
     //jakaskerl suggest remove this line
@@ -225,7 +226,7 @@ int main(int argc, char **argv) {
             auto data = outputFeaturesLeftQueue->get<dai::TrackedFeatures>();
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
-            features_tp = data->getTimestampDevice();
+            features_ts = std::chrono::duration<double>(data->getTimestampDevice().time_since_epoch()).count();
             //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
         } else if (q_name == "trackedFeaturesRight") {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
@@ -240,6 +241,7 @@ int main(int argc, char **argv) {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
             disp_frame = disp_data->getData();
+            latest_exp_t = std::chrono::duration<double>(disp_data->getExposureTime()).count();
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
         } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
@@ -248,7 +250,7 @@ int main(int argc, char **argv) {
                 auto& acc = imuPacket.acceleroMeter;
                 auto& gyro = imuPacket.gyroscope;
                 //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
-                big_buf[0] = std::chrono::duration<double>(gyro.getTimestampDevice().time_since_epoch()).count();
+                big_buf[0] = std::chrono::duration<double>(acc.getTimestampDevice().time_since_epoch()).count();
                 // translate to ros frame, easier to understand in rviz
                 if (dev_type == OAK_D) {
                     big_buf[1] = acc.z;
@@ -280,7 +282,8 @@ int main(int argc, char **argv) {
             disp_seq = -3;
             std::map<int , MyPoint2d> features;
             int c = 0;
-            big_buf[1] = std::chrono::duration<double>(features_tp.time_since_epoch()).count();
+            features_ts = features_ts - latest_exp_t * 0.5;
+            big_buf[1] = features_ts;
             double* buf_ptr = big_buf + 2;
             for (const auto &l_feature : l_features) {
                 float x = l_feature.position.x;
@@ -292,7 +295,7 @@ int main(int argc, char **argv) {
                 if (lr_id != lr_id_mapping.end()) {
                     auto r_feature = r_cur_features.find(lr_id->second);
                     if (r_feature != r_cur_features.end()) {
-                        double dt = std::chrono::duration<double>(features_tp - prv_features_tp).count();
+                        double dt = features_ts - prv_features_ts;
                         double vx = 0, vy = 0;
                         auto prv_pos = l_prv_features.find(l_feature.id);
                         if (prv_pos != l_prv_features.end()) {
@@ -344,7 +347,7 @@ int main(int argc, char **argv) {
                         float dx = x - disp - r_feature.position.x;
                         if (dy * dy + dx * dx <= PAIR_DIST_SQ) { //pair found
                             lr_id_mapping[l_feature.id] = r_feature.id;
-                            double dt = std::chrono::duration<double>(features_tp - prv_features_tp).count();
+                            double dt = features_ts - prv_features_ts;
                             double vx = 0, vy = 0;
                             auto prv_pos = l_prv_features.find(l_feature.id);
                             if (prv_pos != l_prv_features.end()) {
@@ -397,7 +400,7 @@ int main(int argc, char **argv) {
                 sendto(ipc_sock, big_buf, 13*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
             }
             l_prv_features = features;
-            prv_features_tp = features_tp;
+            prv_features_ts = features_ts;
             r_prv_features.clear();
             for (const auto &r_feature : r_features) {
                 r_prv_features[r_feature.id] = MyPoint2d(r_inv_k11 * r_feature.position.x + r_inv_k13, r_inv_k22 * r_feature.position.y + r_inv_k23);
