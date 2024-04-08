@@ -44,6 +44,15 @@ void sig_func(int sig) {
 }
 
 void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy) {
+    std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
+    /*auto imu_ext = calibData.getCameraToImuExtrinsics(dai::CameraBoardSocket::CAM_B, false);
+    for (auto& row : imu_ext) {
+        for (float val: row) {
+            printf("%f ", val);
+        }
+        printf("\n");
+    }*/
+
     auto l_intrinsics = calibData.getCameraIntrinsics(dai::CameraBoardSocket::CAM_B, 640, 400);
     float data[9];
     int i = -1;
@@ -69,6 +78,7 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
 
     cv::Mat r = (cv::Mat_<double>(3,3) << extrinsics[0][0], extrinsics[0][1], extrinsics[0][2], extrinsics[1][0], extrinsics[1][1], extrinsics[1][2], extrinsics[2][0], extrinsics[2][1], extrinsics[2][2]);
     cv::Mat t = (cv::Mat_<double>(3,1) << extrinsics[0][3], extrinsics[1][3], extrinsics[2][3]);
+    std::cout << "stereo extrinsics\n" << r << "\n" << t << "\n";
     cv::Mat r1, r2, p1, p2, q;
     cv::stereoRectify(l_m, l_d, r_m, r_d, cv::Size(640, 400), r, t, r1, r2, p1, p2, q, cv::CALIB_ZERO_DISPARITY, 0);
 
@@ -195,6 +205,11 @@ int main(int argc, char **argv) {
     double r_inv_k13 = -cx / f;
     double r_inv_k22 = 1.0 / f;
     double r_inv_k23 = -cy / f;
+
+    /*auto s_pairs = device.getAvailableStereoPairs();
+    for (auto& s_pair : s_pairs) {
+        std::cout << "stereo pair baseline:" << s_pair.baseline << " cm\n";
+    }*/
 
     //device.setLogOutputLevel(dai::LogLevel::DEBUG);
     //device.setLogLevel(dai::LogLevel::DEBUG);
