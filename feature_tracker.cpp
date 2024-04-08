@@ -164,9 +164,9 @@ int main(int argc, char **argv) {
     depth->setAlphaScaling(0);
 
     // enable ACCELEROMETER_RAW at 500 hz rate
-    imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER, 125);
+    imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_RAW, 125);
     // enable GYROSCOPE_RAW at 400 hz rate
-    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_CALIBRATED, 100);
+    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 100);
     // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
     // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
     imu->setBatchReportThreshold(1);
