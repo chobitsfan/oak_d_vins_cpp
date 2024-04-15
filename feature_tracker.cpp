@@ -22,8 +22,6 @@
 #include "unordered_map"
 #include "unordered_set"
 
-#define CAM_W 640
-#define CAM_H 400
 #define PAIR_DIST_SQ 9
 
 struct MyPoint2d {
@@ -90,9 +88,18 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
 }
 
 int main(int argc, char **argv) {
+    int cam_w, cam_h;
     bool imu_ok = false;
     int ccc=0;
     enum DEV_TYPE {OAK_D, OAK_D_PRO} dev_type;
+    cv::Mat acc_mis_align = (cv::Mat_<double>(3,3) << 1, 0.0179443, -0.00252081, 0, 1, 0.0282776, 0, 0, 1);
+    cv::Mat acc_scale = (cv::Mat_<double>(3,3) << 1.00605, 0, 0, 0, 0.998806, 0, 0, 0, 0.998632);
+    cv::Mat acc_cor = acc_mis_align * acc_scale;
+    cv::Mat acc_bias = (cv::Mat_<double>(3,1) << 0.82728, -0.218663, -0.154771);
+    cv::Mat gyro_mis_align = (cv::Mat_<double>(3,3) << 1, 0.0049248, -0.00523973, 0.0119791, 1, 0.0242365, -0.00266612, -0.03202, 1);
+    cv::Mat gyro_scale = (cv::Mat_<double>(3,3) << 1.00537, 0, 0, 0, 1.00453, 0, 0, 0, 1.00184);
+    cv::Mat gyro_cor = gyro_mis_align * gyro_scale;
+    cv::Mat gyro_bias = (cv::Mat_<double>(3,1) << -0.000348175, -0.0009466, -0.00314802);
 
     struct sigaction act;
     memset(&act, 0, sizeof(act));
@@ -254,6 +261,8 @@ int main(int argc, char **argv) {
             }
         } else if (q_name == "disparity") {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
+            cam_w = disp_data->getWidth();
+            cam_h = disp_data->getHeight();
             disp_seq = disp_data->getSequenceNum();
             disp_frame = disp_data->getData();
             latest_exp_t = std::chrono::duration<double>(disp_data->getExposureTime()).count();
@@ -266,6 +275,10 @@ int main(int argc, char **argv) {
                 auto& gyro = imuPacket.gyroscope;
                 //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
                 big_buf[0] = std::chrono::duration<double>(acc.getTimestampDevice().time_since_epoch()).count();
+                cv::Mat acc_raw = (cv::Mat_<double>(3,1) << acc.x, acc.y, acc.z);
+                cv::Mat1d acc_cali = acc_cor * (acc_raw - acc_bias);
+                cv::Mat gyro_raw = (cv::Mat_<double>(3,1) << gyro.x, gyro.y, gyro.z);
+                cv::Mat1d gyro_cali = gyro_cor * (gyro_raw - gyro_bias);
                 // translate to ros frame, easier to understand in rviz
                 if (dev_type == OAK_D) {
                     big_buf[1] = acc.z;
@@ -275,12 +288,12 @@ int main(int argc, char **argv) {
                     big_buf[5] = gyro.y;
                     big_buf[6] = -gyro.x;
                 } else {
-                    big_buf[1] = -acc.z;
-                    big_buf[2] = -acc.y;
-                    big_buf[3] = -acc.x;
-                    big_buf[4] = -gyro.z;
-                    big_buf[5] = -gyro.y;
-                    big_buf[6] = -gyro.x;
+                    big_buf[1] = -acc_cali(2,0);
+                    big_buf[2] = -acc_cali(1,0);
+                    big_buf[3] = -acc_cali(0,0);
+                    big_buf[4] = -gyro_cali(2,0);
+                    big_buf[5] = -gyro_cali(1,0);
+                    big_buf[6] = -gyro_cali(0,0);
                 }
                 sendto(ipc_sock, big_buf, 7*sizeof(double), 0, (struct sockaddr*)&imu_addr, sizeof(struct sockaddr_un));
             }
@@ -353,9 +366,9 @@ int main(int argc, char **argv) {
                 }
                 float row = roundf(y);
                 float col = roundf(x);
-                if (row > CAM_H - 1) row = CAM_H - 1;
-                if (col > CAM_W - 1) col = CAM_W - 1;
-                int disp = disp_frame[row * CAM_W + col];
+                if (row > cam_h - 1) row = cam_h - 1;
+                if (col > cam_w - 1) col = cam_w - 1;
+                int disp = disp_frame[row * cam_w + col];
                 if (disp > 0) {
                     for (const auto &r_feature : r_features) {
                         float dy = y - r_feature.position.y;
