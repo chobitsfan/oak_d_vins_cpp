@@ -1,4 +1,4 @@
-An utility processing features tracking data from a Luxonis OAK-D camera and sending them to a modified version of VINS-Fusion
+An utility processing features tracking data from a Luxonis OAK-D camera and sending them to a modified version of VINS-Fusion. See https://ardupilot.org/copter/docs/common-vio-oak-d.html
 
 ## 1. Prerequisites
 ### 1.1. **depthai-core**
