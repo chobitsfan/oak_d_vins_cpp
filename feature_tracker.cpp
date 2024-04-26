@@ -41,7 +41,7 @@ void sig_func(int sig) {
     gogogo = false;
 }
 
-void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy) {
+void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
     std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
     /*auto imu_ext = calibData.getCameraToImuExtrinsics(dai::CameraBoardSocket::CAM_B, false);
     for (auto& row : imu_ext) {
@@ -51,7 +51,7 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
         printf("\n");
     }*/
 
-    auto l_intrinsics = calibData.getCameraIntrinsics(dai::CameraBoardSocket::CAM_B, 640, 400);
+    auto l_intrinsics = calibData.getCameraIntrinsics(dai::CameraBoardSocket::CAM_B, cam_w, cam_h);
     float data[9];
     int i = -1;
     for (auto row : l_intrinsics) {
@@ -61,7 +61,7 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
     }
     cv::Mat l_m = cv::Mat(3, 3, CV_32FC1, data);
 
-    auto r_intrinsics = calibData.getCameraIntrinsics(dai::CameraBoardSocket::CAM_C, 640, 400);
+    auto r_intrinsics = calibData.getCameraIntrinsics(dai::CameraBoardSocket::CAM_C, cam_w, cam_h);
     i = -1;
     for (auto row : r_intrinsics) {
         for (auto val : row) {
@@ -76,9 +76,9 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
 
     cv::Mat r = (cv::Mat_<double>(3,3) << extrinsics[0][0], extrinsics[0][1], extrinsics[0][2], extrinsics[1][0], extrinsics[1][1], extrinsics[1][2], extrinsics[2][0], extrinsics[2][1], extrinsics[2][2]);
     cv::Mat t = (cv::Mat_<double>(3,1) << extrinsics[0][3], extrinsics[1][3], extrinsics[2][3]);
-    std::cout << "stereo extrinsics\n" << r << "\n" << t << "\n";
+    //std::cout << "stereo extrinsics\n" << r << "\n" << t << "\n";
     cv::Mat r1, r2, p1, p2, q;
-    cv::stereoRectify(l_m, l_d, r_m, r_d, cv::Size(640, 400), r, t, r1, r2, p1, p2, q, cv::CALIB_ZERO_DISPARITY, 0);
+    cv::stereoRectify(l_m, l_d, r_m, r_d, cv::Size(cam_w, cam_h), r, t, r1, r2, p1, p2, q, cv::CALIB_ZERO_DISPARITY, 0);
 
     std::cout << "P1\n" << p1 << "\nP2\n" << p2 << "\n";
 
@@ -91,15 +91,14 @@ int main(int argc, char **argv) {
     int cam_w, cam_h;
     bool imu_ok = false;
     int ccc=0;
-    enum DEV_TYPE {OAK_D, OAK_D_PRO} dev_type;
-    cv::Mat acc_mis_align = (cv::Mat_<double>(3,3) << 1, 0.0179443, -0.00252081, 0, 1, 0.0282776, 0, 0, 1);
-    cv::Mat acc_scale = (cv::Mat_<double>(3,3) << 1.00605, 0, 0, 0, 0.998806, 0, 0, 0, 0.998632);
+    cv::Mat acc_mis_align = (cv::Mat_<double>(3,3) << 1, -0.000622053, -0.00339005, 0, 1, 0.0124336, 0, 0, 1);
+    cv::Mat acc_scale = (cv::Mat_<double>(3,3) << 0.999004, 0, 0, 0, 0.998758, 0, 0, 0, 0.99627);
     cv::Mat acc_cor = acc_mis_align * acc_scale;
-    cv::Mat acc_bias = (cv::Mat_<double>(3,1) << 0.82728, -0.218663, -0.154771);
-    cv::Mat gyro_mis_align = (cv::Mat_<double>(3,3) << 1, 0.0049248, -0.00523973, 0.0119791, 1, 0.0242365, -0.00266612, -0.03202, 1);
-    cv::Mat gyro_scale = (cv::Mat_<double>(3,3) << 1.00537, 0, 0, 0, 1.00453, 0, 0, 0, 1.00184);
+    cv::Mat acc_bias = (cv::Mat_<double>(3,1) << 0.0107967, -0.0182562, -0.0520981);
+    cv::Mat gyro_mis_align = (cv::Mat_<double>(3,3) << 1, 0.00258869, 8.17298e-05, 0.0015183, 1, 0.0146997, 0.0031297, -0.00911889, 1);
+    cv::Mat gyro_scale = (cv::Mat_<double>(3,3) << 1.01077, 0, 0, 0, 0.972279, 0, 0, 0, 0.990019);
     cv::Mat gyro_cor = gyro_mis_align * gyro_scale;
-    cv::Mat gyro_bias = (cv::Mat_<double>(3,1) << -0.000348175, -0.0009466, -0.00314802);
+    cv::Mat gyro_bias = (cv::Mat_<double>(3,1) << -0.00017598, 0.00251448, -0.00581512);
 
     struct sigaction act;
     memset(&act, 0, sizeof(act));
@@ -142,10 +141,10 @@ int main(int argc, char **argv) {
     xout_imu->setStreamName("imu");
 
     // Properties
-    monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
+    monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     monoLeft->setCamera("left");
     monoLeft->setFps(20);
-    monoRight->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
+    monoRight->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     monoRight->setCamera("right");
     monoRight->setFps(20);
 
@@ -170,10 +169,8 @@ int main(int argc, char **argv) {
     depth->setDepthAlign(dai::RawStereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_LEFT);
     depth->setAlphaScaling(0);
 
-    // enable ACCELEROMETER_RAW at 500 hz rate
-    imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_RAW, 125);
-    // enable GYROSCOPE_RAW at 400 hz rate
-    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 400);
+    imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_RAW, 200);
+    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
     // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
     // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
     imu->setBatchReportThreshold(1);
@@ -199,11 +196,15 @@ int main(int argc, char **argv) {
 
     std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
     std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
-    if (device.getDeviceName() == "OAK-D") dev_type = OAK_D; else dev_type = OAK_D_PRO;
+    if (device.getDeviceName() != "OAK-D-LITE") printf("not OAK-D-LITE\n");
+
+    cam_w = monoLeft->getResolutionWidth();
+    cam_h = monoLeft->getResolutionHeight();
+    printf("stereo res %dx%d\n", cam_w, cam_h);
 
     dai::CalibrationHandler calibData = device.readCalibration2();
     double f, cx, cy;
-    calc_rect_cam_intri(calibData, &f, &cx, &cy);
+    calc_rect_cam_intri(calibData, &f, &cx, &cy, cam_w, cam_h);
     double l_inv_k11 = 1.0 / f;
     double l_inv_k13 = -cx / f;
     double l_inv_k22 = 1.0 / f;
@@ -235,6 +236,7 @@ int main(int argc, char **argv) {
     double features_ts, prv_features_ts;
     std::map<int, int> lr_id_mapping;
     double latest_exp_t = 0;
+    //double last_acc_t = 0;
 
     // Clear queue events
     //jakaskerl suggest remove this line
@@ -261,8 +263,6 @@ int main(int argc, char **argv) {
             }
         } else if (q_name == "disparity") {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
-            cam_w = disp_data->getWidth();
-            cam_h = disp_data->getHeight();
             disp_seq = disp_data->getSequenceNum();
             disp_frame = disp_data->getData();
             latest_exp_t = std::chrono::duration<double>(disp_data->getExposureTime()).count();
@@ -275,26 +275,19 @@ int main(int argc, char **argv) {
                 auto& gyro = imuPacket.gyroscope;
                 //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
                 big_buf[0] = std::chrono::duration<double>(acc.getTimestampDevice().time_since_epoch()).count();
+                //if (big_buf[0] - last_acc_t > 0.007) printf("imu jitter %f\n", big_buf[0] - last_acc_t);
+                //last_acc_t = big_buf[0];
                 cv::Mat acc_raw = (cv::Mat_<double>(3,1) << acc.x, acc.y, acc.z);
                 cv::Mat1d acc_cali = acc_cor * (acc_raw - acc_bias);
                 cv::Mat gyro_raw = (cv::Mat_<double>(3,1) << gyro.x, gyro.y, gyro.z);
                 cv::Mat1d gyro_cali = gyro_cor * (gyro_raw - gyro_bias);
                 // translate to ros frame, easier to understand in rviz
-                if (dev_type == OAK_D) {
-                    big_buf[1] = acc.z;
-                    big_buf[2] = acc.y;
-                    big_buf[3] = -acc.x;
-                    big_buf[4] = gyro.z;
-                    big_buf[5] = gyro.y;
-                    big_buf[6] = -gyro.x;
-                } else {
-                    big_buf[1] = -acc_cali(2,0);
-                    big_buf[2] = -acc_cali(1,0);
-                    big_buf[3] = -acc_cali(0,0);
-                    big_buf[4] = -gyro_cali(2,0);
-                    big_buf[5] = -gyro_cali(1,0);
-                    big_buf[6] = -gyro_cali(0,0);
-                }
+                big_buf[1] = -acc_cali(2,0);
+                big_buf[2] = -acc_cali(0,0);
+                big_buf[3] = acc_cali(1,0);
+                big_buf[4] = -gyro_cali(2,0);
+                big_buf[5] = -gyro_cali(0,0);
+                big_buf[6] = gyro_cali(1,0);
                 sendto(ipc_sock, big_buf, 7*sizeof(double), 0, (struct sockaddr*)&imu_addr, sizeof(struct sockaddr_un));
             }
             if (!imu_ok) {
@@ -423,6 +416,7 @@ int main(int argc, char **argv) {
                 ccc = 0;
                 std::cout << c << " features\n";
             }
+            if (c < 10) printf("too few features: %d\n", c);
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 13*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
