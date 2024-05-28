@@ -91,8 +91,13 @@ int main(int argc, char **argv) {
     bool imu_ok = false;
     int ccc=0;
 
+    if (argc < 3) {
+        printf("usage: %s acc.yml gyro.yml\n", argv[0]);
+        return 0;
+    }
+
     cv::FileStorage imu_yml;
-    imu_yml.open("imu_tk_acc.yml", cv::FileStorage::READ);
+    imu_yml.open(argv[1], cv::FileStorage::READ);
     cv::Mat acc_mis_align, acc_scale, acc_bias;
     imu_yml["misalign"] >> acc_mis_align;
     imu_yml["scale"] >> acc_scale;
@@ -100,7 +105,7 @@ int main(int argc, char **argv) {
     cv::Mat acc_cor = acc_mis_align * acc_scale;
     imu_yml.release();
     //std::cout<<acc_mis_align<<"\n"<<acc_scale<<"\n"<<acc_bias<<"\n";
-    imu_yml.open("imu_tk_gyro.yml", cv::FileStorage::READ);
+    imu_yml.open(argv[2], cv::FileStorage::READ);
     cv::Mat gyro_mis_align, gyro_scale, gyro_bias;
     imu_yml["misalign"] >> gyro_mis_align;
     imu_yml["scale"] >> gyro_scale;
