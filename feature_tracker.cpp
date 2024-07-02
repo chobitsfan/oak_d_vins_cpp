@@ -237,6 +237,7 @@ int main(int argc, char **argv) {
     std::map<int, int> lr_id_mapping;
     double latest_exp_t = 0;
     //double last_acc_t = 0;
+    std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
 
     // Clear queue events
     //jakaskerl suggest remove this line
@@ -251,6 +252,7 @@ int main(int argc, char **argv) {
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
             features_ts = std::chrono::duration<double>(data->getTimestampDevice().time_since_epoch()).count();
+            l_ft_tp = data->getTimestamp();
             //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
         } else if (q_name == "trackedFeaturesRight") {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
@@ -414,7 +416,9 @@ int main(int argc, char **argv) {
             ccc++;
             if (ccc > 60) {
                 ccc = 0;
-                std::cout << c << " features\n";
+                std::cout << c << " features, latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
+                //latency = 40 ms
+                //std::cout << "latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
             }
             if (c < 10) printf("too few features: %d\n", c);
             if (imu_ok && c > 0) {
