@@ -22,8 +22,6 @@
 #include "unordered_map"
 #include "unordered_set"
 
-#define PAIR_DIST_SQ 4
-
 struct MyPoint2d {
     double x = 0;
     double y = 0;
@@ -370,7 +368,7 @@ int main(int argc, char **argv) {
                     for (const auto &r_feature : r_features) {
                         float dy = y - r_feature.position.y;
                         float dx = x - disp - r_feature.position.x;
-                        if ((dy * dy < 1) && (dx * dx <= PAIR_DIST_SQ)) { //pair found
+                        if (fabsf(dy) <= 1 && fabsf(dx) <= 2) { //pair found
                             //lr_id_mapping[l_feature.id] = r_feature.id;
                             double dt = features_ts - prv_features_ts;
                             double vx = 0, vy = 0;
