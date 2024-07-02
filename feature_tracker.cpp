@@ -14,6 +14,7 @@
 #include <sys/un.h>
 #include <signal.h>
 
+#include <opencv2/core.hpp>
 #include <opencv2/calib3d.hpp>
 
 // Includes common necessary includes for development using depthai library
@@ -89,14 +90,24 @@ int main(int argc, char **argv) {
     int cam_w, cam_h;
     bool imu_ok = false;
     int ccc=0;
-    cv::Mat acc_mis_align = (cv::Mat_<double>(3,3) << 1, -0.000622053, -0.00339005, 0, 1, 0.0124336, 0, 0, 1);
-    cv::Mat acc_scale = (cv::Mat_<double>(3,3) << 0.999004, 0, 0, 0, 0.998758, 0, 0, 0, 0.99627);
+
+    cv::FileStorage imu_yml;
+    imu_yml.open("imu_tk_acc.yml", cv::FileStorage::READ);
+    cv::Mat acc_mis_align, acc_scale, acc_bias;
+    imu_yml["misalign"] >> acc_mis_align;
+    imu_yml["scale"] >> acc_scale;
+    imu_yml["bias"] >> acc_bias;
     cv::Mat acc_cor = acc_mis_align * acc_scale;
-    cv::Mat acc_bias = (cv::Mat_<double>(3,1) << 0.0107967, -0.0182562, -0.0520981);
-    cv::Mat gyro_mis_align = (cv::Mat_<double>(3,3) << 1, 0.00258869, 8.17298e-05, 0.0015183, 1, 0.0146997, 0.0031297, -0.00911889, 1);
-    cv::Mat gyro_scale = (cv::Mat_<double>(3,3) << 1.01077, 0, 0, 0, 0.972279, 0, 0, 0, 0.990019);
-    cv::Mat gyro_cor = gyro_mis_align * gyro_scale;
-    cv::Mat gyro_bias = (cv::Mat_<double>(3,1) << -0.00017598, 0.00251448, -0.00581512);
+    imu_yml.release();
+    //std::cout<<acc_mis_align<<"\n"<<acc_scale<<"\n"<<acc_bias<<"\n";
+    imu_yml.open("imu_tk_gyro.yml", cv::FileStorage::READ);
+    cv::Mat gyro_mis_align, gyro_scale, gyro_bias;
+    imu_yml["misalign"] >> gyro_mis_align;
+    imu_yml["scale"] >> gyro_scale;
+    imu_yml["bias"] >> gyro_bias;
+    cv::Mat gyro_cor = acc_mis_align * acc_scale;
+    imu_yml.release();
+    //std::cout<<gyro_mis_align<<"\n"<<gyro_scale<<"\n"<<gyro_bias<<"\n";
 
     struct sigaction act;
     memset(&act, 0, sizeof(act));
