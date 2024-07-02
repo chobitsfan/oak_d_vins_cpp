@@ -22,7 +22,7 @@
 #include "unordered_map"
 #include "unordered_set"
 
-#define PAIR_DIST_SQ 9
+#define PAIR_DIST_SQ 4
 
 struct MyPoint2d {
     double x = 0;
@@ -42,7 +42,7 @@ void sig_func(int sig) {
 }
 
 void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
-    std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
+    //std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
     /*auto imu_ext = calibData.getCameraToImuExtrinsics(dai::CameraBoardSocket::CAM_B, false);
     for (auto& row : imu_ext) {
         for (float val: row) {
@@ -204,6 +204,8 @@ int main(int argc, char **argv) {
 
     dai::CalibrationHandler calibData = device.readCalibration2();
     double f, cx, cy;
+    float baseline = calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) * 0.01f;
+    std::cout << "stereo baseline:" << baseline << " m\n";
     calc_rect_cam_intri(calibData, &f, &cx, &cy, cam_w, cam_h);
     double l_inv_k11 = 1.0 / f;
     double l_inv_k13 = -cx / f;
@@ -234,7 +236,7 @@ int main(int argc, char **argv) {
     std::map<int, MyPoint2d> l_prv_features, r_prv_features;
     std::map<int, dai::Point2f> r_cur_features;
     double features_ts, prv_features_ts;
-    std::map<int, int> lr_id_mapping;
+    //std::map<int, int> lr_id_mapping;
     double latest_exp_t = 0;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
@@ -314,7 +316,7 @@ int main(int argc, char **argv) {
                 double cur_un_x = l_inv_k11 * x + l_inv_k13;
                 double cur_un_y = l_inv_k22 * y + l_inv_k23;
                 features[l_feature.id] = MyPoint2d(cur_un_x, cur_un_y);
-                auto lr_id = lr_id_mapping.find(l_feature.id);
+                /*auto lr_id = lr_id_mapping.find(l_feature.id);
                 if (lr_id != lr_id_mapping.end()) {
                     auto r_feature = r_cur_features.find(lr_id->second);
                     if (r_feature != r_cur_features.end()) {
@@ -358,7 +360,7 @@ int main(int argc, char **argv) {
 
                         continue;
                     }
-                }
+                }*/
                 float row = roundf(y);
                 float col = roundf(x);
                 if (row > cam_h - 1) row = cam_h - 1;
@@ -368,8 +370,8 @@ int main(int argc, char **argv) {
                     for (const auto &r_feature : r_features) {
                         float dy = y - r_feature.position.y;
                         float dx = x - disp - r_feature.position.x;
-                        if (dy * dy + dx * dx <= PAIR_DIST_SQ) { //pair found
-                            lr_id_mapping[l_feature.id] = r_feature.id;
+                        if ((dy * dy < 1) && (dx * dx <= PAIR_DIST_SQ)) { //pair found
+                            //lr_id_mapping[l_feature.id] = r_feature.id;
                             double dt = features_ts - prv_features_ts;
                             double vx = 0, vy = 0;
                             auto prv_pos = l_prv_features.find(l_feature.id);
@@ -402,10 +404,11 @@ int main(int argc, char **argv) {
                             buf_ptr[10] = y;
                             buf_ptr[11] = vx;
                             buf_ptr[12] = vy;
+                            buf_ptr[13] = f * baseline / disp;
 
                             if (c < 118) {
                                 ++c;
-                                buf_ptr += 13;
+                                buf_ptr += 14;
                             }
 
                             break;
@@ -423,7 +426,7 @@ int main(int argc, char **argv) {
             if (c < 10) printf("too few features: %d\n", c);
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
-                sendto(ipc_sock, big_buf, 13*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
+                sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
             }
             l_prv_features = features;
             prv_features_ts = features_ts;
@@ -432,7 +435,7 @@ int main(int argc, char **argv) {
                 r_prv_features[r_feature.id] = MyPoint2d(r_inv_k11 * r_feature.position.x + r_inv_k13, r_inv_k22 * r_feature.position.y + r_inv_k23);
             }
             //auto t2 = std::chrono::steady_clock::now();
-            //std::cout << pp_msg.points.size() << " points, " << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
+            //std::cout << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
         }
     }
 
