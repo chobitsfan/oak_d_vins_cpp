@@ -96,6 +96,8 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    FILE* video_file = fopen("mono_left.h264", "w");
+
     cv::FileStorage imu_yml;
     imu_yml.open(argv[1], cv::FileStorage::READ);
     cv::Mat acc_mis_align, acc_scale, acc_bias;
@@ -142,17 +144,20 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
+    auto videoEnc = pipeline.create<dai::node::VideoEncoder>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
     auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
+    auto xout_h264 = pipeline.create<dai::node::XLinkOut>();
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
+    xout_h264->setStreamName("h264");
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
@@ -193,6 +198,10 @@ int main(int argc, char **argv) {
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(10);
 
+    videoEnc->setDefaultProfilePreset(20, dai::VideoEncoderProperties::Profile::H264_MAIN);
+    //videoEnc->setKeyframeFrequency(40);
+    videoEnc->setBitrateKbps(500);
+
     // Linking
     monoLeft->out.link(depth->left);
     depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
@@ -204,6 +213,9 @@ int main(int argc, char **argv) {
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
+
+    monoLeft->out.link(videoEnc->input);
+    videoEnc->bitstream.link(xout_h264->input);
 
     // Connect to device and start pipeline
     dai::Device device(pipeline);
@@ -243,6 +255,7 @@ int main(int argc, char **argv) {
     auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 5, false);
+    auto video = device.getOutputQueue("h264", 1, false);
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
     std::vector<std::uint8_t> disp_frame;
@@ -312,6 +325,12 @@ int main(int argc, char **argv) {
                 imu_ok = true;
                 std::cout<< "imu ok\n";
             }
+        } else if (q_name == "h264") {
+            auto h264Packet = video->get<dai::ImgFrame>();
+            auto h264data = h264Packet->getData();
+            //auto ts1 = std::chrono::steady_clock::now();
+            fwrite(h264data.data(), 1, h264data.size(), video_file);
+            //std::cout << "video write takes " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - ts1).count() << " ms\n";
         }
 
         if (l_seq == r_seq && r_seq == disp_seq) {
@@ -454,6 +473,7 @@ int main(int argc, char **argv) {
     }
 
     close(ipc_sock);
+    fclose(video_file);
     printf("bye\n");
 
     return 0;
