@@ -437,7 +437,7 @@ int main(int argc, char **argv) {
                 //latency = 40 ms
                 //std::cout << "latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
             }
-            if (c < 10) printf("too few features: %d\n", c);
+            //if (c < 10) printf("too few features: %d\n", c);
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
