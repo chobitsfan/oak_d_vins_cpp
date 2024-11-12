@@ -99,6 +99,10 @@ int main(int argc, char **argv) {
     }
 
     FILE* video_file = fopen("mono_left.h264", "w");
+#ifdef log_imu
+    FILE* imu_file = fopen("oakd_imu.bin", "w");
+    FILE* features_file = fopen("oakd_features.bin", "w");
+#endif
 
     cv::FileStorage imu_yml;
     imu_yml.open(argv[1], cv::FileStorage::READ);
@@ -322,6 +326,9 @@ int main(int argc, char **argv) {
                 big_buf[5] = -gyro_cali(0,0);
                 big_buf[6] = gyro_cali(1,0);
                 sendto(ipc_sock, big_buf, 7*sizeof(double), 0, (struct sockaddr*)&imu_addr, sizeof(struct sockaddr_un));
+#ifdef log_imu
+                fwrite(big_buf, sizeof(double), 7, imu_file);
+#endif
             }
             if (!imu_ok) {
                 imu_ok = true;
@@ -462,6 +469,9 @@ int main(int argc, char **argv) {
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
+#ifdef log_imu
+                fwrite(big_buf, sizeof(double), 14*MAX_FEATURES_COUNT+2, features_file);
+#endif
             }
             l_prv_features = features;
             prv_features_ts = features_ts;
@@ -476,6 +486,10 @@ int main(int argc, char **argv) {
 
     close(ipc_sock);
     fclose(video_file);
+#ifdef log_imu
+    fclose(imu_file);
+    fclose(features_file);
+#endif
     printf("bye\n");
 
     return 0;
