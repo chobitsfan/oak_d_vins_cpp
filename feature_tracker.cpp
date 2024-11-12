@@ -23,6 +23,8 @@
 #include "unordered_map"
 #include "unordered_set"
 
+#define MAX_FEATURES_COUNT 60
+
 struct MyPoint2d {
     double x = 0;
     double y = 0;
@@ -33,7 +35,7 @@ struct MyPoint2d {
     }
 };
 
-double big_buf[12*1024/sizeof(double)];
+double big_buf[14*MAX_FEATURES_COUNT+2];
 bool gogogo = true;
 
 void sig_func(int sig) {
@@ -439,7 +441,7 @@ int main(int argc, char **argv) {
                             buf_ptr[12] = vy;
                             buf_ptr[13] = f * baseline / disp;
 
-                            if (c < 118) {
+                            if (c < MAX_FEATURES_COUNT) {
                                 ++c;
                                 buf_ptr += 14;
                             }
