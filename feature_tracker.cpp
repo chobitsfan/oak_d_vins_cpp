@@ -13,6 +13,8 @@
 #include <fcntl.h>
 #include <sys/un.h>
 #include <signal.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/calib3d.hpp>
@@ -24,6 +26,7 @@
 #include "unordered_set"
 
 #define MAX_FEATURES_COUNT 60
+#define H264_STREAMING
 
 struct MyPoint2d {
     double x = 0;
@@ -37,6 +40,7 @@ struct MyPoint2d {
 
 double big_buf[14*MAX_FEATURES_COUNT+2];
 bool gogogo = true;
+unsigned char seq_num = 0;
 
 void sig_func(int sig) {
     gogogo = false;
@@ -105,6 +109,14 @@ int main(int argc, char **argv) {
     FILE* features_file = fopen("oakd_features.bin", "w");
 #endif
 
+#ifdef H264_STREAMING
+    // IPC shared memory
+    key_t key = ftok("shmfile", 65);
+    // shmget returns an identifier in shmid
+    int shmid = shmget(key, 500000, 0666 | IPC_CREAT);
+    unsigned char* h264_pkt_data = (unsigned char*)shmat(shmid, (void*)0, 0);
+#endif
+
     cv::FileStorage imu_yml;
     imu_yml.open(argv[1], cv::FileStorage::READ);
     cv::Mat acc_mis_align, acc_scale, acc_bias;
@@ -149,7 +161,7 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
-#ifdef REC_VIDEO
+#if defined(REC_VIDEO) || defined(H264_STREAMING)
     auto videoEnc = pipeline.create<dai::node::VideoEncoder>();
 #endif
 
@@ -158,7 +170,7 @@ int main(int argc, char **argv) {
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
-#ifdef REC_VIDEO
+#if defined(REC_VIDEO) || defined(H264_STREAMING)
     auto xout_h264 = pipeline.create<dai::node::XLinkOut>();
 #endif
 
@@ -166,7 +178,7 @@ int main(int argc, char **argv) {
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
-#ifdef REC_VIDEO
+#if defined(REC_VIDEO) || defined(H264_STREAMING)
     xout_h264->setStreamName("h264");
 #endif
 
@@ -209,7 +221,7 @@ int main(int argc, char **argv) {
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(10);
 
-#ifdef REC_VIDEO
+#if defined(REC_VIDEO) || defined(H264_STREAMING)
     videoEnc->setDefaultProfilePreset(20, dai::VideoEncoderProperties::Profile::H264_MAIN);
     //videoEnc->setKeyframeFrequency(40);
     videoEnc->setBitrateKbps(500);
@@ -226,7 +238,7 @@ int main(int argc, char **argv) {
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
-#ifdef REC_VIDEO
+#if defined(REC_VIDEO) || defined(H264_STREAMING)
     monoLeft->out.link(videoEnc->input);
     videoEnc->bitstream.link(xout_h264->input);
 #endif
@@ -269,7 +281,7 @@ int main(int argc, char **argv) {
     auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 5, false);
-#ifdef REC_VIDEO
+#if defined(REC_VIDEO) || defined(H264_STREAMING)
     auto video = device.getOutputQueue("h264", 1, false);
 #endif
 
@@ -344,13 +356,35 @@ int main(int argc, char **argv) {
                 imu_ok = true;
                 std::cout<< "imu ok\n";
             }
-#ifdef REC_VIDEO
         } else if (q_name == "h264") {
+#if defined(REC_VIDEO) || defined(H264_STREAMING)
             auto h264Packet = video->get<dai::ImgFrame>();
             auto h264data = h264Packet->getData();
+#endif
+#ifdef REC_VIDEO
             //auto ts1 = std::chrono::steady_clock::now();
             fwrite(h264data.data(), 1, h264data.size(), video_file);
             //std::cout << "video write takes " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - ts1).count() << " ms\n";
+#endif
+#ifdef H264_STREAMING
+            //
+            // IPC data structure: length+data+seq_num+flag
+            // length - size of h264 bitstream (4 bytes)
+            // data - h264 bitstream (n bytes)
+            // seq_num - 1 byte
+            // flag - 1 byte
+            //
+            int h264_pkt_len = h264data.size();
+			//printf("h264enc len=%d\n", h264Packet->getData().size());
+			h264_pkt_data[0] = (h264_pkt_len >> 24) & 0xff;
+			h264_pkt_data[1] = (h264_pkt_len >> 16) & 0xff;
+			h264_pkt_data[2] = (h264_pkt_len >> 8) & 0xff;
+			h264_pkt_data[3] = h264_pkt_len & 0xff;
+			memcpy(h264_pkt_data+4, h264data.data(), h264_pkt_len);
+            h264_pkt_data[h264_pkt_len+4] = seq_num;
+            seq_num++;
+            if(seq_num == 0xff) seq_num = 0;
+            h264_pkt_data[h264_pkt_len+5] = 1;
 #endif
         }
 
@@ -503,6 +537,10 @@ int main(int argc, char **argv) {
 #ifdef log_imu
     fclose(imu_file);
     fclose(features_file);
+#endif
+#ifdef H264_STREAMING
+    shmdt(h264_pkt_data);
+    shmctl(shmid, IPC_RMID, NULL);
 #endif
     printf("bye\n");
 

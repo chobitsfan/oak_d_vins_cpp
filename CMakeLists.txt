@@ -1,4 +1,5 @@
 set(CMAKE_BUILD_TYPE "Release")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 cmake_minimum_required(VERSION 2.8.12)
 project( FeatureTracker )
 find_package(depthai CONFIG REQUIRED)
