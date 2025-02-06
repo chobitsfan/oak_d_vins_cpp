@@ -19,6 +19,10 @@
 #include <opencv2/core.hpp>
 #include <opencv2/calib3d.hpp>
 
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/header.hpp"
+#include "sensor_msgs/msg/image.hpp"
+
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
 #include "deque"
@@ -26,7 +30,6 @@
 #include "unordered_set"
 
 #define MAX_FEATURES_COUNT 60
-#define H264_STREAMING
 
 struct MyPoint2d {
     double x = 0;
@@ -39,12 +42,7 @@ struct MyPoint2d {
 };
 
 double big_buf[14*MAX_FEATURES_COUNT+2];
-bool gogogo = true;
 unsigned char seq_num = 0;
-
-void sig_func(int sig) {
-    gogogo = false;
-}
 
 void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
     //std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
@@ -101,6 +99,10 @@ int main(int argc, char **argv) {
         printf("usage: %s imu_tk_cali.yml\n", argv[0]);
         return 0;
     }
+
+    rclcpp::init(argc, argv);
+    auto ros_node = rclcpp::Node::make_shared("feature_tracker");
+    auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", 1);
 #ifdef REC_VIDEO
     FILE* video_file = fopen("mono_left.h264", "w");
 #endif
@@ -132,11 +134,6 @@ int main(int argc, char **argv) {
     cv::Mat gyro_cor = acc_mis_align * acc_scale;
     imu_yml.release();
     //std::cout<<gyro_mis_align<<"\n"<<gyro_scale<<"\n"<<gyro_bias<<"\n";
-
-    struct sigaction act;
-    memset(&act, 0, sizeof(act));
-    act.sa_handler = sig_func;
-    sigaction(SIGINT, &act, NULL);
 
     struct sockaddr_un ipc_local_addr, imu_addr, features_addr;
     memset(&ipc_local_addr, 0, sizeof(struct sockaddr_un));
@@ -170,6 +167,7 @@ int main(int argc, char **argv) {
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
+    auto xout_mono = pipeline.create<dai::node::XLinkOut>();
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     auto xout_h264 = pipeline.create<dai::node::XLinkOut>();
 #endif
@@ -178,6 +176,7 @@ int main(int argc, char **argv) {
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
+    xout_mono->setStreamName("mono");
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     xout_h264->setStreamName("h264");
 #endif
@@ -238,6 +237,7 @@ int main(int argc, char **argv) {
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
+    monoLeft->out.link(xout_mono->input);
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     monoLeft->out.link(videoEnc->input);
     videoEnc->bitstream.link(xout_h264->input);
@@ -280,7 +280,8 @@ int main(int argc, char **argv) {
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
     auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
-    auto imuQueue = device.getOutputQueue("imu", 5, false);
+    auto imuQueue = device.getOutputQueue("imu", 10, false);
+    auto mono_queue = device.getOutputQueue("mono", 1, false);
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     auto video = device.getOutputQueue("h264", 1, false);
 #endif
@@ -301,7 +302,7 @@ int main(int argc, char **argv) {
     //https://discuss.luxonis.com/d/3484-getqueueevent-takes-much-additional-time/7
     //device.getQueueEvents();
 
-    while(gogogo) {
+    while(rclcpp::ok()) {
         auto q_name = device.getQueueEvent();
 
         if (q_name == "trackedFeaturesLeft") {
@@ -386,6 +387,22 @@ int main(int argc, char **argv) {
             if(seq_num == 0xff) seq_num = 0;
             h264_pkt_data[h264_pkt_len+5] = 1;
 #endif
+        } else if (q_name == "mono") {
+            auto img_frame = mono_queue->get<dai::ImgFrame>();
+            auto img_data = img_frame->getData();
+
+            std_msgs::msg::Header header;
+            header.stamp = ros_node->get_clock()->now();
+            header.frame_id = "body";
+            sensor_msgs::msg::Image img;
+            img.header = header;
+            img.height = img_frame->getHeight();
+            img.width = img_frame->getWidth();
+            img.is_bigendian = 0;
+            img.encoding = "mono8";
+            img.step = img.width;
+            img.data = img_data;
+            img_pub->publish(img);
         }
 
         if (l_seq == r_seq && r_seq == disp_seq) {
@@ -542,6 +559,7 @@ int main(int argc, char **argv) {
     shmdt(h264_pkt_data);
     shmctl(shmid, IPC_RMID, NULL);
 #endif
+    rclcpp::shutdown();
     printf("bye\n");
 
     return 0;
