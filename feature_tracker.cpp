@@ -43,6 +43,7 @@ struct MyPoint2d {
 
 double big_buf[14*MAX_FEATURES_COUNT+2];
 unsigned char seq_num = 0;
+unsigned int mono_pub_c = 0;
 
 void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
     //std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
@@ -389,20 +390,23 @@ int main(int argc, char **argv) {
 #endif
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
-            auto img_data = img_frame->getData();
-
-            std_msgs::msg::Header header;
-            header.stamp = ros_node->get_clock()->now();
-            header.frame_id = "body";
-            sensor_msgs::msg::Image img;
-            img.header = header;
-            img.height = img_frame->getHeight();
-            img.width = img_frame->getWidth();
-            img.is_bigendian = 0;
-            img.encoding = "mono8";
-            img.step = img.width;
-            img.data = img_data;
-            img_pub->publish(img);
+            mono_pub_c++;
+            if (mono_pub_c > 5) {
+                mono_pub_c = 0;
+                auto img_data = img_frame->getData();
+                std_msgs::msg::Header header;
+                header.stamp = ros_node->get_clock()->now();
+                header.frame_id = "body";
+                sensor_msgs::msg::Image img;
+                img.header = header;
+                img.height = img_frame->getHeight();
+                img.width = img_frame->getWidth();
+                img.is_bigendian = 0;
+                img.encoding = "mono8";
+                img.step = img.width;
+                img.data = img_data;
+                img_pub->publish(img);
+            }
         }
 
         if (l_seq == r_seq && r_seq == disp_seq) {
