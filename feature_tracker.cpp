@@ -18,6 +18,7 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/calib3d.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/header.hpp"
@@ -103,6 +104,8 @@ int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
     auto ros_node = rclcpp::Node::make_shared("feature_tracker");
     auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", 1);
+    auto img_pub2 = ros_node->create_publisher<sensor_msgs::msg::Image>("matched", 1);
+    auto img_pub3 = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_right", 1);
 #ifdef REC_VIDEO
     FILE* video_file = fopen("mono_left.h264", "w");
 #endif
@@ -168,6 +171,7 @@ int main(int argc, char **argv) {
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
     auto xout_mono = pipeline.create<dai::node::XLinkOut>();
+    auto xout_mono_r = pipeline.create<dai::node::XLinkOut>();
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     auto xout_h264 = pipeline.create<dai::node::XLinkOut>();
 #endif
@@ -177,6 +181,7 @@ int main(int argc, char **argv) {
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
     xout_mono->setStreamName("mono");
+    xout_mono_r->setStreamName("mono_r");
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     xout_h264->setStreamName("h264");
 #endif
@@ -237,7 +242,8 @@ int main(int argc, char **argv) {
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
-    monoLeft->out.link(xout_mono->input);
+    featureTrackerLeft->passthroughInputImage.link(xout_mono->input);
+    featureTrackerRight->passthroughInputImage.link(xout_mono_r->input);
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     monoLeft->out.link(videoEnc->input);
     videoEnc->bitstream.link(xout_h264->input);
@@ -282,6 +288,7 @@ int main(int argc, char **argv) {
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 10, false);
     auto mono_queue = device.getOutputQueue("mono", 1, false);
+    auto mono_r_queue = device.getOutputQueue("mono_r", 1, false);
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     auto video = device.getOutputQueue("h264", 1, false);
 #endif
@@ -290,12 +297,12 @@ int main(int argc, char **argv) {
     std::vector<std::uint8_t> disp_frame;
     std::vector<dai::TrackedFeature> l_features, r_features;
     std::map<int, MyPoint2d> l_prv_features, r_prv_features;
-    std::map<int, dai::Point2f> r_cur_features;
     double features_ts, prv_features_ts;
     //std::map<int, int> lr_id_mapping;
     double latest_exp_t = 0;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
+    std::vector<dai::TrackedFeature> matched_features, no_disp_features;
 
     // Clear queue events
     //jakaskerl suggest remove this line
@@ -317,10 +324,6 @@ int main(int argc, char **argv) {
             r_features = data->trackedFeatures;
             r_seq = data->getSequenceNum();
             //std::cout << "r ft " << r_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - data->getTimestamp()).count() << " ms\n";
-            r_cur_features.clear();
-            for (const auto &feature : r_features) {
-                r_cur_features[feature.id] = feature.position;
-            }
         } else if (q_name == "disparity") {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
@@ -389,7 +392,20 @@ int main(int argc, char **argv) {
 #endif
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
-            auto img_data = img_frame->getData();
+            cv::Mat frame = img_frame->getFrame();
+
+            for (const auto &feature : matched_features) {
+                //cv::rectangle(frame, m_feature, cv::Point(m_feature.x+3,m_feature.y+3), 255, cv::FILLED);
+                float x = feature.position.x;
+                float y = feature.position.y;
+                cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 1, 255, 2);
+            }
+            for (const auto &feature : no_disp_features) {
+                //cv::rectangle(frame, m_feature, cv::Point(m_feature.x+3,m_feature.y+3), 255, cv::FILLED);
+                float x = feature.position.x;
+                float y = feature.position.y;
+                cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_PLAIN, 1, 255, 2);
+            }
 
             std_msgs::msg::Header header;
             header.stamp = ros_node->get_clock()->now();
@@ -401,8 +417,41 @@ int main(int argc, char **argv) {
             img.is_bigendian = 0;
             img.encoding = "mono8";
             img.step = img.width;
-            img.data = img_data;
+            img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
+            img_pub2->publish(img);
+
+            for (const auto &feature : l_features) {
+                float x = feature.position.x;
+                float y = feature.position.y;
+                //cv::rectangle(frame, cv::Point(x, y), cv::Point(x+3,y+3), 255, cv::FILLED);
+                cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 1, 255, 2);
+            }
+
+            img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
             img_pub->publish(img);
+
+            matched_features.clear();
+            no_disp_features.clear();
+        } else if (q_name == "mono_r") {
+            auto img_frame = mono_r_queue->get<dai::ImgFrame>();
+            cv::Mat frame = img_frame->getFrame();
+            for (const auto &feature : r_features) {
+                float x = feature.position.x;
+                float y = feature.position.y;
+                cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 1, 255, 2);
+            }
+            std_msgs::msg::Header header;
+            header.stamp = ros_node->get_clock()->now();
+            header.frame_id = "body";
+            sensor_msgs::msg::Image img;
+            img.header = header;
+            img.height = img_frame->getHeight();
+            img.width = img_frame->getWidth();
+            img.is_bigendian = 0;
+            img.encoding = "mono8";
+            img.step = img.width;
+            img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
+            img_pub3->publish(img);
         }
 
         if (l_seq == r_seq && r_seq == disp_seq) {
@@ -415,57 +464,13 @@ int main(int argc, char **argv) {
             features_ts = features_ts - latest_exp_t * 0.5;
             big_buf[1] = features_ts;
             double* buf_ptr = big_buf + 2;
+            int no_disp_c = 0;
             for (const auto &l_feature : l_features) {
                 float x = l_feature.position.x;
                 float y = l_feature.position.y;
                 double cur_un_x = l_inv_k11 * x + l_inv_k13;
                 double cur_un_y = l_inv_k22 * y + l_inv_k23;
                 features[l_feature.id] = MyPoint2d(cur_un_x, cur_un_y);
-                /*auto lr_id = lr_id_mapping.find(l_feature.id);
-                if (lr_id != lr_id_mapping.end()) {
-                    auto r_feature = r_cur_features.find(lr_id->second);
-                    if (r_feature != r_cur_features.end()) {
-                        double dt = features_ts - prv_features_ts;
-                        double vx = 0, vy = 0;
-                        auto prv_pos = l_prv_features.find(l_feature.id);
-                        if (prv_pos != l_prv_features.end()) {
-                            vx = (cur_un_x - prv_pos->second.x) / dt;
-                            vy = (cur_un_y - prv_pos->second.y) / dt;
-                        }
-                        buf_ptr[0] = l_feature.id;
-                        buf_ptr[1] = cur_un_x;
-                        buf_ptr[2] = cur_un_y;
-                        buf_ptr[3] = x;
-                        buf_ptr[4] = y;
-                        buf_ptr[5] = vx;
-                        buf_ptr[6] = vy;
-
-                        x = r_feature->second.x;
-                        y = r_feature->second.y;
-                        vx = 0;
-                        vy = 0;
-                        cur_un_x = r_inv_k11 * x + r_inv_k13;
-                        cur_un_y = r_inv_k22 * y + r_inv_k23;
-                        prv_pos = r_prv_features.find(r_feature->first);
-                        if (prv_pos != r_prv_features.end()) {
-                            vx = (cur_un_x - prv_pos->second.x) / dt;
-                            vy = (cur_un_y - prv_pos->second.y) / dt;
-                        }
-                        buf_ptr[7] = cur_un_x;
-                        buf_ptr[8] = cur_un_y;
-                        buf_ptr[9] = x;
-                        buf_ptr[10] = y;
-                        buf_ptr[11] = vx;
-                        buf_ptr[12] = vy;
-
-                        if (c < 118) {
-                            ++c;
-                            buf_ptr += 13;
-                        }
-
-                        continue;
-                    }
-                }*/
                 float row = roundf(y);
                 float col = roundf(x);
                 if (row > cam_h - 1) row = cam_h - 1;
@@ -476,7 +481,7 @@ int main(int argc, char **argv) {
                         float dy = y - r_feature.position.y;
                         float dx = x - disp - r_feature.position.x;
                         if (fabsf(dy) <= 1 && fabsf(dx) <= 2) { //pair found
-                            //lr_id_mapping[l_feature.id] = r_feature.id;
+                            matched_features.push_back(l_feature);
                             double dt = features_ts - prv_features_ts;
                             double vx = 0, vy = 0;
                             auto prv_pos = l_prv_features.find(l_feature.id);
@@ -519,12 +524,16 @@ int main(int argc, char **argv) {
                             break;
                         }
                     }
+                } else {
+                    no_disp_c++;
+                    no_disp_features.push_back(l_feature);
+                    //printf("%d no disp\n", l_feature.id);
                 }
             }
             ccc++;
             if (ccc > 60) {
                 ccc = 0;
-                std::cout << c << " features, latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
+                std::cout << l_features.size() << " " << no_disp_c << " " << c << " features, latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
                 //latency = 40 ms
                 //std::cout << "latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
             }
