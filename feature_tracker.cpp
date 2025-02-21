@@ -1,3 +1,4 @@
+// build in build directory with cmake -D'depthai_DIR=$HOME/builds/depthai/depthai-core/build' ..
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -106,6 +107,7 @@ int main(int argc, char **argv) {
     auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", 1);
     auto img_pub2 = ros_node->create_publisher<sensor_msgs::msg::Image>("matched", 1);
     auto img_pub3 = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_right", 1);
+    auto img_disparity = ros_node->create_publisher<sensor_msgs::msg::Image>("disparity", 1);
 #ifdef REC_VIDEO
     FILE* video_file = fopen("mono_left.h264", "w");
 #endif
@@ -330,6 +332,48 @@ int main(int argc, char **argv) {
             disp_frame = disp_data->getData();
             latest_exp_t = std::chrono::duration<double>(disp_data->getExposureTime()).count();
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
+            // auto img_frame = mono_queue->get<dai::ImgFrame>();
+            cv::Mat frame = disp_data->getFrame();
+            cv::Mat cframe; // color frame
+            cv::cvtColor(frame, cframe, cv::COLOR_GRAY2RGB);
+            for (const auto &feature : l_features) {
+                float x = feature.position.x;
+                float y = feature.position.y;
+                cv::circle(cframe, cv::Point(x, y), 5, cv::Scalar(255,0,0), cv::FILLED,8,0);
+                // cv::putText(cframe, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(200,50,50), 2);
+            }
+            for (const auto &feature : r_features) {
+                float x = feature.position.x;
+                float y = feature.position.y;
+                cv::circle(cframe, cv::Point(x, y), 5, cv::Scalar(0,0,255), cv::FILLED,8,0);
+                // cv::putText(cframe, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(200,50,50), 2);
+            }
+            for (const auto &feature : matched_features) {
+                float x = feature.position.x;
+                float y = feature.position.y;
+                cv::circle(cframe, cv::Point(x, y), 7, cv::Scalar(0,255,0), 3,8,0);
+                // cv::putText(cframe, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0,255,0), 2);
+            }
+
+            // ros publishing
+            std_msgs::msg::Header header;
+            header.stamp = ros_node->get_clock()->now();
+            header.frame_id = "body";
+            sensor_msgs::msg::Image img;
+            img.header = header;
+            img.height = disp_data->getHeight();
+            img.width = disp_data->getWidth();
+            img.is_bigendian = 0;
+            img.encoding = "bgr8";
+            // img.encoding = "mono8";
+            // img.step = img.width;
+            img.step = frame.cols * 3;
+            // img.data.assign(frame.data, frame.data + frame.total() * frame.channels());
+
+            // img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
+            img.data = std::vector<uint8_t>(cframe.data, cframe.data + cframe.total() * cframe.channels());
+            img_disparity->publish(img);
+
         } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
             auto imuPackets = imuData->packets;
@@ -393,18 +437,23 @@ int main(int argc, char **argv) {
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             cv::Mat frame = img_frame->getFrame();
+            cv::Mat cframe; // color frame
+            cv::cvtColor(frame, cframe, cv::COLOR_GRAY2RGB);
 
             for (const auto &feature : matched_features) {
                 //cv::rectangle(frame, m_feature, cv::Point(m_feature.x+3,m_feature.y+3), 255, cv::FILLED);
                 float x = feature.position.x;
                 float y = feature.position.y;
-                cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 1, 255, 2);
+                cv::putText(cframe, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0,255,0), 2);
+                // cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 1, 255, 2);
             }
+            // seems to show features with no disparity
             for (const auto &feature : no_disp_features) {
                 //cv::rectangle(frame, m_feature, cv::Point(m_feature.x+3,m_feature.y+3), 255, cv::FILLED);
                 float x = feature.position.x;
                 float y = feature.position.y;
-                cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_PLAIN, 1, 255, 2);
+                // cv::putText(cframe, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_PLAIN, 0.7, cv::Scalar(0,255,0), 2);
+                // cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_PLAIN, 1, 255, 2);
             }
 
             std_msgs::msg::Header header;
@@ -415,30 +464,42 @@ int main(int argc, char **argv) {
             img.height = img_frame->getHeight();
             img.width = img_frame->getWidth();
             img.is_bigendian = 0;
-            img.encoding = "mono8";
-            img.step = img.width;
-            img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
-            img_pub2->publish(img);
+            img.encoding = "bgr8";
+            // img.encoding = "mono8";
+            // img.step = img.width;
+            img.step = frame.cols * 3;
+            // img.data.assign(frame.data, frame.data + frame.total() * frame.channels());
 
+            // img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
+            img.data = std::vector<uint8_t>(cframe.data, cframe.data + cframe.total() * cframe.channels());
+            img_pub2->publish(img); // matched features image
+
+            // left mono image display processing
+            cv::cvtColor(frame, cframe, cv::COLOR_GRAY2RGB);
             for (const auto &feature : l_features) {
                 float x = feature.position.x;
                 float y = feature.position.y;
                 //cv::rectangle(frame, cv::Point(x, y), cv::Point(x+3,y+3), 255, cv::FILLED);
-                cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 1, 255, 2);
+                cv::circle(cframe, cv::Point(x, y), 5, cv::Scalar(255,0,0), cv::FILLED,8,0);
+                cv::putText(cframe, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(200,50,50), 2);
             }
-
-            img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
-            img_pub->publish(img);
+            // img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
+            img.data = std::vector<uint8_t>(cframe.data, cframe.data + cframe.total() * cframe.channels());
+            img_pub->publish(img); // left image
 
             matched_features.clear();
             no_disp_features.clear();
         } else if (q_name == "mono_r") {
             auto img_frame = mono_r_queue->get<dai::ImgFrame>();
             cv::Mat frame = img_frame->getFrame();
+            cv::Mat cframe; // color frame
+            cv::cvtColor(frame, cframe, cv::COLOR_GRAY2RGB);
             for (const auto &feature : r_features) {
                 float x = feature.position.x;
                 float y = feature.position.y;
-                cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 1, 255, 2);
+                cv::circle(cframe, cv::Point(x, y), 5, cv::Scalar(0,0,255), cv::FILLED,8,0);
+                cv::putText(cframe, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0,0,255), 2);
+                // cv::putText(frame, std::to_string(feature.id), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 1, 255, 2);
             }
             std_msgs::msg::Header header;
             header.stamp = ros_node->get_clock()->now();
@@ -448,9 +509,14 @@ int main(int argc, char **argv) {
             img.height = img_frame->getHeight();
             img.width = img_frame->getWidth();
             img.is_bigendian = 0;
-            img.encoding = "mono8";
-            img.step = img.width;
-            img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
+            // img.encoding = "mono8";
+            img.encoding = "bgr8";
+            // img.step = img.width;
+            img.step = frame.cols * 3;
+            // img.data.assign(frame.data, frame.data + frame.total() * frame.channels());
+
+            // img.data = std::vector<uint8_t>(frame.data, frame.data + frame.total());
+            img.data = std::vector<uint8_t>(cframe.data, cframe.data + cframe.total() * cframe.channels());
             img_pub3->publish(img);
         }
 
