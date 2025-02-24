@@ -204,10 +204,10 @@ int main(int argc, char **argv) {
     featureTrackerRight->setHardwareResources(2, 2);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
-    depth->initialConfig.setMedianFilter(dai::MedianFilter::KERNEL_5x5);
+    depth->initialConfig.setMedianFilter(dai::MedianFilter::MEDIAN_OFF);
     depth->setLeftRightCheck(true);
     depth->setExtendedDisparity(false);
-    depth->setSubpixel(false);
+    depth->setSubpixel(true);
     depth->setDepthAlign(dai::RawStereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_LEFT);
     depth->setAlphaScaling(0);
 
@@ -288,11 +288,10 @@ int main(int argc, char **argv) {
 #endif
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
-    std::vector<std::uint8_t> disp_frame;
+    uint16_t* disp_frame;
     std::vector<dai::TrackedFeature> l_features, r_features;
     std::map<int, MyPoint2d> l_prv_features, r_prv_features;
     double features_ts, prv_features_ts;
-    //std::map<int, int> lr_id_mapping;
     double latest_exp_t = 0;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
@@ -320,7 +319,7 @@ int main(int argc, char **argv) {
         } else if (q_name == "disparity") {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
-            disp_frame = disp_data->getData();
+            disp_frame = (uint16_t*)disp_data->getData().data();
             latest_exp_t = std::chrono::duration<double>(disp_data->getExposureTime()).count();
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
         } else if (q_name == "imu") {
@@ -420,65 +419,76 @@ int main(int argc, char **argv) {
                 double cur_un_x = l_inv_k11 * x + l_inv_k13;
                 double cur_un_y = l_inv_k22 * y + l_inv_k23;
                 features[l_feature.id] = MyPoint2d(cur_un_x, cur_un_y);
-                float row = roundf(y);
-                float col = roundf(x);
-                if (row > cam_h - 1) row = cam_h - 1;
-                if (col > cam_w - 1) col = cam_w - 1;
-                int disp = disp_frame[row * cam_w + col];
-                if (disp > 0) {
-                    for (const auto &r_feature : r_features) {
-                        float dy = y - r_feature.position.y;
-                        float dx = x - disp - r_feature.position.x;
-                        if (fabsf(dy) <= 1 && fabsf(dx) <= 2) { //pair found
-                            //lr_id_mapping[l_feature.id] = r_feature.id;
-                            double dt = features_ts - prv_features_ts;
-                            double vx = 0, vy = 0;
-                            auto prv_pos = l_prv_features.find(l_feature.id);
-                            if (prv_pos != l_prv_features.end()) {
-                                vx = (cur_un_x - prv_pos->second.x) / dt;
-                                vy = (cur_un_y - prv_pos->second.y) / dt;
-                            }
-                            buf_ptr[0] = l_feature.id;
-                            buf_ptr[1] = cur_un_x;
-                            buf_ptr[2] = cur_un_y;
-                            buf_ptr[3] = x;
-                            buf_ptr[4] = y;
-                            buf_ptr[5] = vx;
-                            buf_ptr[6] = vy;
+                int row = y;
+                int col = x;
+                int ceil_row = ceilf(y);
+                int ceil_col = ceilf(x);
+                float disps[4] = {0};
+                disps[0] = disp_frame[row * cam_w + col] / 8.0;
+                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_frame[ceil_row * cam_w + col] / 8.0;
+                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_frame[row * cam_w + ceil_col] / 8.0;
+                if (disps[1] && disps[2]) {
+                    disps[3] = disp_frame[ceil_row * cam_w + ceil_col] / 8.0;
+                }
+                for (int i = 0; i < 4; i++) {
+                    float disp = disps[i];
+                    if (disp > 0) {
+                        bool pair_found = false;
+                        for (const auto &r_feature : r_features) {
+                            float dy = y - r_feature.position.y;
+                            float dx = x - disp - r_feature.position.x;
+                            if (fabsf(dy) <= 1 && fabsf(dx) <= 2) { //pair found
+                                pair_found = true;
+                                double dt = features_ts - prv_features_ts;
+                                double vx = 0, vy = 0;
+                                auto prv_pos = l_prv_features.find(l_feature.id);
+                                if (prv_pos != l_prv_features.end()) {
+                                    vx = (cur_un_x - prv_pos->second.x) / dt;
+                                    vy = (cur_un_y - prv_pos->second.y) / dt;
+                                }
+                                buf_ptr[0] = l_feature.id;
+                                buf_ptr[1] = cur_un_x;
+                                buf_ptr[2] = cur_un_y;
+                                buf_ptr[3] = x;
+                                buf_ptr[4] = y;
+                                buf_ptr[5] = vx;
+                                buf_ptr[6] = vy;
 
-                            x = r_feature.position.x;
-                            y = r_feature.position.y;
-                            vx = 0;
-                            vy = 0;
-                            cur_un_x = r_inv_k11 * x + r_inv_k13;
-                            cur_un_y = r_inv_k22 * y + r_inv_k23;
-                            prv_pos = r_prv_features.find(r_feature.id);
-                            if (prv_pos != r_prv_features.end()) {
-                                vx = (cur_un_x - prv_pos->second.x) / dt;
-                                vy = (cur_un_y - prv_pos->second.y) / dt;
-                            }
-                            buf_ptr[7] = cur_un_x;
-                            buf_ptr[8] = cur_un_y;
-                            buf_ptr[9] = x;
-                            buf_ptr[10] = y;
-                            buf_ptr[11] = vx;
-                            buf_ptr[12] = vy;
-                            buf_ptr[13] = f * baseline / disp;
+                                x = r_feature.position.x;
+                                y = r_feature.position.y;
+                                vx = 0;
+                                vy = 0;
+                                cur_un_x = r_inv_k11 * x + r_inv_k13;
+                                cur_un_y = r_inv_k22 * y + r_inv_k23;
+                                prv_pos = r_prv_features.find(r_feature.id);
+                                if (prv_pos != r_prv_features.end()) {
+                                    vx = (cur_un_x - prv_pos->second.x) / dt;
+                                    vy = (cur_un_y - prv_pos->second.y) / dt;
+                                }
+                                buf_ptr[7] = cur_un_x;
+                                buf_ptr[8] = cur_un_y;
+                                buf_ptr[9] = x;
+                                buf_ptr[10] = y;
+                                buf_ptr[11] = vx;
+                                buf_ptr[12] = vy;
+                                buf_ptr[13] = f * baseline / disp;
 
-                            if (c < MAX_FEATURES_COUNT) {
-                                ++c;
-                                buf_ptr += 14;
-                            }
+                                if (c < MAX_FEATURES_COUNT) {
+                                    ++c;
+                                    buf_ptr += 14;
+                                }
 
-                            break;
+                                break;
+                            }
                         }
+                        if (pair_found) break;
                     }
                 }
             }
             ccc++;
             if (ccc > 60) {
                 ccc = 0;
-                std::cout << c << " features, latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
+                std::cout << l_features.size() << " features " << c << " LR matched, latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
                 //latency = 40 ms
                 //std::cout << "latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
             }
