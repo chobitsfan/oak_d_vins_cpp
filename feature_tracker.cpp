@@ -162,6 +162,7 @@ int main(int argc, char **argv) {
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     auto videoEnc = pipeline.create<dai::node::VideoEncoder>();
 #endif
+    auto manip = pipeline.create<dai::node::ImageManip>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
     auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
@@ -189,6 +190,8 @@ int main(int argc, char **argv) {
     monoRight->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     monoRight->setCamera("right");
     monoRight->setFps(20);
+
+    manip->initialConfig.setResize(320, 240);
 
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
     featureTrackerRight->initialConfig.setNumTargetFeatures(16*5);
@@ -239,7 +242,8 @@ int main(int argc, char **argv) {
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
-    monoLeft->out.link(xout_mono->input);
+    monoLeft->out.link(manip->inputImage);
+    manip->out.link(xout_mono->input);
 #if defined(REC_VIDEO) || defined(H264_STREAMING)
     monoLeft->out.link(videoEnc->input);
     videoEnc->bitstream.link(xout_h264->input);
