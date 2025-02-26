@@ -208,6 +208,7 @@ int main(int argc, char **argv) {
     depth->setLeftRightCheck(true);
     depth->setExtendedDisparity(false);
     depth->setSubpixel(true);
+    depth->setSubpixelFractionalBits(3);
     depth->setDepthAlign(dai::RawStereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_LEFT);
     depth->setAlphaScaling(0);
 
