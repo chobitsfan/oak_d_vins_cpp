@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
     monoRight->setCamera("right");
     monoRight->setFps(20);
 
-    manip->initialConfig.setResize(320, 240);
+    manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
 
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
     featureTrackerRight->initialConfig.setNumTargetFeatures(16*5);
@@ -390,7 +390,7 @@ int main(int argc, char **argv) {
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_pub_c++;
-            if (mono_pub_c > 5) {
+            if (mono_pub_c > 3) {
                 mono_pub_c = 0;
                 auto img_data = img_frame->getData();
                 std_msgs::msg::Header header;
