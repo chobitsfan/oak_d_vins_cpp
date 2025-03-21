@@ -30,6 +30,7 @@
 #include "unordered_set"
 
 #define MAX_FEATURES_COUNT 60
+//#define H264_STREAMING
 
 struct MyPoint2d {
     double x = 0;
@@ -103,7 +104,7 @@ int main(int argc, char **argv) {
 
     rclcpp::init(argc, argv);
     auto ros_node = rclcpp::Node::make_shared("feature_tracker");
-    auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", 1);
+    auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", rclcpp::QoS(1).best_effort().durability_volatile());
 #ifdef REC_VIDEO
     FILE* video_file = fopen("mono_left.h264", "w");
 #endif
