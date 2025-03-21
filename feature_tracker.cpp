@@ -29,6 +29,8 @@
 #include "unordered_map"
 #include "unordered_set"
 
+using namespace std::chrono_literals;
+
 #define MAX_FEATURES_COUNT 60
 //#define H264_STREAMING
 #define VIDEO_FPS 20
@@ -45,7 +47,19 @@ struct MyPoint2d {
 };
 
 double big_buf[14*MAX_FEATURES_COUNT+2];
-unsigned char seq_num = 0;
+sensor_msgs::msg::Image mono_img;
+bool mono_pub_go = true;
+bool mono_img_ready = false;
+
+void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img_pub) {
+    while (mono_pub_go) {
+        if (mono_img_ready) {
+            img_pub->publish(mono_img);
+            mono_img_ready = false;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+}
 
 void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
     //std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
@@ -101,6 +115,7 @@ int main(int argc, char **argv) {
     int long_ms=0;
     int short_ms=INT_MAX;
     unsigned int mono_pub_c = 0;
+    unsigned char seq_num = 0;
 
     if (argc < 2) {
         printf("usage: %s imu_tk_cali.yml\n", argv[0]);
@@ -318,6 +333,8 @@ int main(int argc, char **argv) {
     //https://discuss.luxonis.com/d/3484-getqueueevent-takes-much-additional-time/7
     //device.getQueueEvents();
 
+    std::thread img_pub_worker(img_pub_func, img_pub);
+
     while(rclcpp::ok()) {
         auto q_name = device.getQueueEvent();
 
@@ -401,19 +418,14 @@ int main(int argc, char **argv) {
             mono_pub_c++;
             if (mono_pub_c > 3) {
                 mono_pub_c = 0;
-                auto img_data = img_frame->getData();
-                std_msgs::msg::Header header;
-                header.stamp = ros_node->get_clock()->now();
-                header.frame_id = "body";
-                sensor_msgs::msg::Image img;
-                img.header = header;
-                img.height = img_frame->getHeight();
-                img.width = img_frame->getWidth();
-                img.is_bigendian = 0;
-                img.encoding = "mono8";
-                img.step = img.width;
-                img.data = img_data;
-                img_pub->publish(img);
+                mono_img.header.stamp = ros_node->get_clock()->now();
+                mono_img.height = img_frame->getHeight();
+                mono_img.width = img_frame->getWidth();
+                mono_img.is_bigendian = 0;
+                mono_img.encoding = "mono8";
+                mono_img.step = mono_img.width;
+                mono_img.data = img_frame->getData();
+                mono_img_ready = true;
             }
         }
 
@@ -538,6 +550,10 @@ int main(int argc, char **argv) {
     shmdt(h264_pkt_data);
     shmctl(shmid, IPC_RMID, NULL);
 #endif
+
+    mono_pub_go = false;
+    img_pub_worker.join();
+
     rclcpp::shutdown();
     printf("bye\n");
 
