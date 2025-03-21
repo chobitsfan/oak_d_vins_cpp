@@ -524,7 +524,7 @@ int main(int argc, char **argv) {
     }
 
     close(ipc_sock);
-#ifdef log_imu
+#ifdef REC_IMU
     fclose(imu_file);
     fclose(features_file);
 #endif
