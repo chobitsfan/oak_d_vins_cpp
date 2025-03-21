@@ -31,6 +31,8 @@
 
 #define MAX_FEATURES_COUNT 60
 //#define H264_STREAMING
+#define VIDEO_FPS 20
+#define VIDEO_BITRATE 1500
 
 struct MyPoint2d {
     double x = 0;
@@ -93,6 +95,7 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
 }
 
 int main(int argc, char **argv) {
+    bool h264_ok = false;
     int cam_w, cam_h;
     bool imu_ok = false;
     int ccc=0;
@@ -105,9 +108,6 @@ int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
     auto ros_node = rclcpp::Node::make_shared("feature_tracker");
     auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", rclcpp::QoS(1).best_effort().durability_volatile());
-#ifdef REC_VIDEO
-    FILE* video_file = fopen("mono_left.h264", "w");
-#endif
 #ifdef REC_IMU
     FILE* imu_file = fopen("oakd_imu.bin", "w");
     FILE* features_file = fopen("oakd_features.bin", "w");
@@ -160,7 +160,8 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
+#ifdef H264_STREAMING
+    auto camRgb = pipeline.create<dai::node::ColorCamera>();
     auto videoEnc = pipeline.create<dai::node::VideoEncoder>();
 #endif
     auto manip = pipeline.create<dai::node::ImageManip>();
@@ -171,7 +172,7 @@ int main(int argc, char **argv) {
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
     auto xout_mono = pipeline.create<dai::node::XLinkOut>();
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
+#ifdef H264_STREAMING
     auto xout_h264 = pipeline.create<dai::node::XLinkOut>();
 #endif
 
@@ -180,7 +181,7 @@ int main(int argc, char **argv) {
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
     xout_mono->setStreamName("mono");
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
+#ifdef H264_STREAMING
     xout_h264->setStreamName("h264");
 #endif
 
@@ -226,10 +227,17 @@ int main(int argc, char **argv) {
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(10);
 
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
-    videoEnc->setDefaultProfilePreset(20, dai::VideoEncoderProperties::Profile::H264_MAIN);
-    //videoEnc->setKeyframeFrequency(40);
-    videoEnc->setBitrateKbps(500);
+#ifdef H264_STREAMING
+    camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
+    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
+    camRgb->setFps(VIDEO_FPS);
+    camRgb->setNumFramesPool(2, 2, 2, 2, 2);
+    videoEnc->setDefaultProfilePreset(VIDEO_FPS, dai::VideoEncoderProperties::Profile::H264_MAIN);
+    videoEnc->setKeyframeFrequency(VIDEO_FPS*2);
+    videoEnc->setBitrateKbps(VIDEO_BITRATE);
+    videoEnc->setNumFramesPool(2);
+    videoEnc->input.setQueueSize(2);
+    videoEnc->input.setBlocking(false);
 #endif
 
     // Linking
@@ -245,8 +253,9 @@ int main(int argc, char **argv) {
     imu->out.link(xout_imu->input);
     monoLeft->out.link(manip->inputImage);
     manip->out.link(xout_mono->input);
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
-    monoLeft->out.link(videoEnc->input);
+#ifdef H264_STREAMING
+    //monoLeft->out.link(videoEnc->input);
+    camRgb->video.link(videoEnc->input);
     videoEnc->bitstream.link(xout_h264->input);
 #endif
 
@@ -289,7 +298,7 @@ int main(int argc, char **argv) {
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 10, false);
     auto mono_queue = device.getOutputQueue("mono", 1, false);
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
+#ifdef H264_STREAMING
     auto video = device.getOutputQueue("h264", 1, false);
 #endif
 
@@ -359,16 +368,13 @@ int main(int argc, char **argv) {
                 std::cout<< "imu ok\n";
             }
         } else if (q_name == "h264") {
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
+#ifdef H264_STREAMING
+            if (!h264_ok) {
+                h264_ok = true;
+                std::cout<<"h264 ok\n";
+            }
             auto h264Packet = video->get<dai::ImgFrame>();
             auto h264data = h264Packet->getData();
-#endif
-#ifdef REC_VIDEO
-            //auto ts1 = std::chrono::steady_clock::now();
-            fwrite(h264data.data(), 1, h264data.size(), video_file);
-            //std::cout << "video write takes " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - ts1).count() << " ms\n";
-#endif
-#ifdef H264_STREAMING
             //
             // IPC data structure: length+data+seq_num+flag
             // length - size of h264 bitstream (4 bytes)
@@ -518,9 +524,6 @@ int main(int argc, char **argv) {
     }
 
     close(ipc_sock);
-#ifdef REC_VIDEO
-    fclose(video_file);
-#endif
 #ifdef log_imu
     fclose(imu_file);
     fclose(features_file);
