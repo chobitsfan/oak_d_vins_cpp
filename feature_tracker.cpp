@@ -105,21 +105,6 @@ int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
     auto ros_node = rclcpp::Node::make_shared("feature_tracker");
     auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", 1);
-#ifdef REC_VIDEO
-    FILE* video_file = fopen("mono_left.h264", "w");
-#endif
-#ifdef REC_IMU
-    FILE* imu_file = fopen("oakd_imu.bin", "w");
-    FILE* features_file = fopen("oakd_features.bin", "w");
-#endif
-
-#ifdef H264_STREAMING
-    // IPC shared memory
-    key_t key = ftok("shmfile", 65);
-    // shmget returns an identifier in shmid
-    int shmid = shmget(key, 500000, 0666 | IPC_CREAT);
-    unsigned char* h264_pkt_data = (unsigned char*)shmat(shmid, (void*)0, 0);
-#endif
 
     cv::FileStorage imu_yml;
     imu_yml.open(argv[1], cv::FileStorage::READ);
@@ -160,9 +145,6 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
-    auto videoEnc = pipeline.create<dai::node::VideoEncoder>();
-#endif
     auto manip = pipeline.create<dai::node::ImageManip>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
@@ -171,18 +153,12 @@ int main(int argc, char **argv) {
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
     auto xout_mono = pipeline.create<dai::node::XLinkOut>();
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
-    auto xout_h264 = pipeline.create<dai::node::XLinkOut>();
-#endif
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
     xout_mono->setStreamName("mono");
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
-    xout_h264->setStreamName("h264");
-#endif
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
@@ -230,12 +206,6 @@ int main(int argc, char **argv) {
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(10);
 
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
-    videoEnc->setDefaultProfilePreset(20, dai::VideoEncoderProperties::Profile::H264_MAIN);
-    //videoEnc->setKeyframeFrequency(40);
-    videoEnc->setBitrateKbps(500);
-#endif
-
     // Linking
     monoLeft->out.link(depth->left);
     depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
@@ -249,10 +219,6 @@ int main(int argc, char **argv) {
     imu->out.link(xout_imu->input);
     monoLeft->out.link(manip->inputImage);
     manip->out.link(xout_mono->input);
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
-    monoLeft->out.link(videoEnc->input);
-    videoEnc->bitstream.link(xout_h264->input);
-#endif
 
     // Connect to device and start pipeline
     dai::Device device(pipeline);
@@ -293,9 +259,6 @@ int main(int argc, char **argv) {
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 10, false);
     auto mono_queue = device.getOutputQueue("mono", 1, false);
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
-    auto video = device.getOutputQueue("h264", 1, false);
-#endif
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
 #ifdef DEPTH_SUBPIXEL
@@ -362,44 +325,12 @@ int main(int argc, char **argv) {
                 big_buf[5] = -gyro_cali(0,0);
                 big_buf[6] = gyro_cali(1,0);
                 sendto(ipc_sock, big_buf, 7*sizeof(double), 0, (struct sockaddr*)&imu_addr, sizeof(struct sockaddr_un));
-#ifdef REC_IMU
-                fwrite(big_buf, sizeof(double), 7, imu_file);
-#endif
             }
             if (!imu_ok) {
                 imu_ok = true;
                 std::cout<< "imu ok\n";
             }
         } else if (q_name == "h264") {
-#if defined(REC_VIDEO) || defined(H264_STREAMING)
-            auto h264Packet = video->get<dai::ImgFrame>();
-            auto h264data = h264Packet->getData();
-#endif
-#ifdef REC_VIDEO
-            //auto ts1 = std::chrono::steady_clock::now();
-            fwrite(h264data.data(), 1, h264data.size(), video_file);
-            //std::cout << "video write takes " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - ts1).count() << " ms\n";
-#endif
-#ifdef H264_STREAMING
-            //
-            // IPC data structure: length+data+seq_num+flag
-            // length - size of h264 bitstream (4 bytes)
-            // data - h264 bitstream (n bytes)
-            // seq_num - 1 byte
-            // flag - 1 byte
-            //
-            int h264_pkt_len = h264data.size();
-			//printf("h264enc len=%d\n", h264Packet->getData().size());
-			h264_pkt_data[0] = (h264_pkt_len >> 24) & 0xff;
-			h264_pkt_data[1] = (h264_pkt_len >> 16) & 0xff;
-			h264_pkt_data[2] = (h264_pkt_len >> 8) & 0xff;
-			h264_pkt_data[3] = h264_pkt_len & 0xff;
-			memcpy(h264_pkt_data+4, h264data.data(), h264_pkt_len);
-            h264_pkt_data[h264_pkt_len+4] = seq_num;
-            seq_num++;
-            if(seq_num == 0xff) seq_num = 0;
-            h264_pkt_data[h264_pkt_len+5] = 1;
-#endif
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_pub_c++;
@@ -526,9 +457,6 @@ int main(int argc, char **argv) {
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
-#ifdef REC_IMU
-                fwrite(big_buf, sizeof(double), 14*MAX_FEATURES_COUNT+2, features_file);
-#endif
             }
             l_prv_features = features;
             prv_features_ts = features_ts;
@@ -542,17 +470,7 @@ int main(int argc, char **argv) {
     }
 
     close(ipc_sock);
-#ifdef REC_VIDEO
-    fclose(video_file);
-#endif
-#ifdef log_imu
-    fclose(imu_file);
-    fclose(features_file);
-#endif
-#ifdef H264_STREAMING
-    shmdt(h264_pkt_data);
-    shmctl(shmid, IPC_RMID, NULL);
-#endif
+
     rclcpp::shutdown();
     printf("bye\n");
 
