@@ -30,6 +30,7 @@
 #include "unordered_set"
 
 #define MAX_FEATURES_COUNT 60
+#define DEPTH_SUBPIXEL
 
 struct MyPoint2d {
     double x = 0;
@@ -210,8 +211,12 @@ int main(int argc, char **argv) {
     depth->initialConfig.setMedianFilter(dai::MedianFilter::MEDIAN_OFF);
     depth->setLeftRightCheck(true);
     depth->setExtendedDisparity(false);
+#ifdef DEPTH_SUBPIXEL
     depth->setSubpixel(true);
     depth->setSubpixelFractionalBits(3);
+#else
+    depth->setSubpixel(false);
+#endif
     depth->setDepthAlign(dai::RawStereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_LEFT);
     depth->setAlphaScaling(0);
 
@@ -293,7 +298,11 @@ int main(int argc, char **argv) {
 #endif
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
+#ifdef DEPTH_SUBPIXEL
     uint16_t* disp_frame;
+#else
+    uint8_t* disp_frame;
+#endif
     std::vector<dai::TrackedFeature> l_features, r_features;
     std::map<int, MyPoint2d> l_prv_features, r_prv_features;
     double features_ts, prv_features_ts;
@@ -324,7 +333,11 @@ int main(int argc, char **argv) {
         } else if (q_name == "disparity") {
             auto disp_data = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_data->getSequenceNum();
+#ifdef DEPTH_SUBPIXEL
             disp_frame = (uint16_t*)disp_data->getData().data();
+#else
+            disp_frame = (uint8_t*)disp_data->getData().data();
+#endif
             latest_exp_t = std::chrono::duration<double>(disp_data->getExposureTime()).count();
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
         } else if (q_name == "imu") {
@@ -390,7 +403,7 @@ int main(int argc, char **argv) {
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_pub_c++;
-            if (mono_pub_c > 5) {
+            if (mono_pub_c > 1) {
                 mono_pub_c = 0;
                 auto img_data = img_frame->getData();
                 std_msgs::msg::Header header;
@@ -428,15 +441,27 @@ int main(int argc, char **argv) {
                 int col = x;
                 int ceil_row = ceilf(y);
                 int ceil_col = ceilf(x);
+#ifdef DEPTH_SUBPIXEL
                 float disps[4] = {0};
-                disps[0] = disp_frame[row * cam_w + col] / 8.0;
-                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_frame[ceil_row * cam_w + col] / 8.0;
-                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_frame[row * cam_w + ceil_col] / 8.0;
+                float disp;
+                disps[0] = disp_frame[row * cam_w + col] / 8.0f;
+                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_frame[ceil_row * cam_w + col] / 8.0f;
+                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_frame[row * cam_w + ceil_col] / 8.0f;
                 if (disps[1] && disps[2]) {
-                    disps[3] = disp_frame[ceil_row * cam_w + ceil_col] / 8.0;
+                    disps[3] = disp_frame[ceil_row * cam_w + ceil_col] / 8.0f;
                 }
+#else
+                int disps[4] = {0};
+                int disp;
+                disps[0] = disp_frame[row * cam_w + col];
+                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_frame[ceil_row * cam_w + col];
+                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_frame[row * cam_w + ceil_col];
+                if (disps[1] && disps[2]) {
+                    disps[3] = disp_frame[ceil_row * cam_w + ceil_col];
+                }
+#endif
                 for (int i = 0; i < 4; i++) {
-                    float disp = disps[i];
+                    disp = disps[i];
                     if (disp > 0) {
                         bool pair_found = false;
                         for (const auto &r_feature : r_features) {
