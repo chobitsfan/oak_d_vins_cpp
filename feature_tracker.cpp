@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
 
     rclcpp::init(argc, argv);
     auto ros_node = rclcpp::Node::make_shared("feature_tracker");
-    auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", 1);
+    auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", rclcpp::QoS(1).best_effort().durability_volatile());
 
     cv::FileStorage imu_yml;
     imu_yml.open(argv[1], cv::FileStorage::READ);
@@ -330,7 +330,6 @@ int main(int argc, char **argv) {
                 imu_ok = true;
                 std::cout<< "imu ok\n";
             }
-        } else if (q_name == "h264") {
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_pub_c++;
@@ -340,15 +339,15 @@ int main(int argc, char **argv) {
                 std_msgs::msg::Header header;
                 header.stamp = ros_node->get_clock()->now();
                 header.frame_id = "body";
-                sensor_msgs::msg::Image img;
-                img.header = header;
-                img.height = img_frame->getHeight();
-                img.width = img_frame->getWidth();
-                img.is_bigendian = 0;
-                img.encoding = "mono8";
-                img.step = img.width;
-                img.data = img_data;
-                img_pub->publish(img);
+                auto img = std::make_unique<sensor_msgs::msg::Image>();
+                img->header = header;
+                img->height = img_frame->getHeight();
+                img->width = img_frame->getWidth();
+                img->is_bigendian = 0;
+                img->encoding = "mono8";
+                img->step = img->width;
+                img->data = img_data;
+                img_pub->publish(std::move(img));
             }
         }
 
