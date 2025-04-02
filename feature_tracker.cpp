@@ -234,8 +234,9 @@ int main(int argc, char **argv) {
     dai::CalibrationHandler calibData = device.readCalibration2();
     double f, cx, cy;
     float baseline = calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) * 0.01f;
-    std::cout << "stereo baseline:" << baseline << " m\n";
     calc_rect_cam_intri(calibData, &f, &cx, &cy, cam_w, cam_h);
+    float hfov = 2 * atanf(cam_w / (2 * f));
+    std::cout << "stereo baseline:" << baseline << " m, focal length:" << f << " px, HFOV: " << hfov * 180 / M_PI << " degrees\n";
     double l_inv_k11 = 1.0 / f;
     double l_inv_k13 = -cx / f;
     double l_inv_k22 = 1.0 / f;
