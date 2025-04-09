@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
 
     rclcpp::init(argc, argv);
     auto ros_node = rclcpp::Node::make_shared("feature_tracker");
-    auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", rclcpp::QoS(1).best_effort().durability_volatile());
+    auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("disparity", rclcpp::QoS(1).best_effort().durability_volatile());
 
     cv::FileStorage imu_yml;
     imu_yml.open(argv[1], cv::FileStorage::READ);
@@ -145,20 +145,20 @@ int main(int argc, char **argv) {
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
     auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
-    auto manip = pipeline.create<dai::node::ImageManip>();
+    //auto manip = pipeline.create<dai::node::ImageManip>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
     auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
-    auto xout_mono = pipeline.create<dai::node::XLinkOut>();
+    //auto xout_mono = pipeline.create<dai::node::XLinkOut>();
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
-    xout_mono->setStreamName("mono");
+    //xout_mono->setStreamName("mono");
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
@@ -168,7 +168,7 @@ int main(int argc, char **argv) {
     monoRight->setCamera("right");
     monoRight->setFps(20);
 
-    manip->initialConfig.setResize(320, 240);
+    //manip->initialConfig.setResize(80, 60);
 
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
     featureTrackerRight->initialConfig.setNumTargetFeatures(16*5);
@@ -185,6 +185,7 @@ int main(int argc, char **argv) {
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::MEDIAN_OFF);
+    //depth->initialConfig.setConfidenceThreshold(0); // maximum confidence that it holds a valid value
     depth->setLeftRightCheck(true);
     depth->setExtendedDisparity(false);
 #ifdef DEPTH_SUBPIXEL
@@ -217,8 +218,9 @@ int main(int argc, char **argv) {
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
-    monoLeft->out.link(manip->inputImage);
-    manip->out.link(xout_mono->input);
+    //monoLeft->out.link(manip->inputImage);
+    //depth->disparity.link(manip->inputImage);
+    //manip->out.link(xout_mono->input);
 
     // Connect to device and start pipeline
     dai::Device device(pipeline);
@@ -236,7 +238,8 @@ int main(int argc, char **argv) {
     float baseline = calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) * 0.01f;
     calc_rect_cam_intri(calibData, &f, &cx, &cy, cam_w, cam_h);
     float hfov = 2 * atanf(cam_w / (2 * f));
-    std::cout << "stereo baseline:" << baseline << " m, focal length:" << f << " px, HFOV: " << hfov * 180 / M_PI << " degrees\n";
+    float vfov = 2 * atanf(cam_h / (2 * f));
+    std::cout << "stereo baseline:" << baseline << " m, f:" << f << " px, cx:" << cx << ", cy:" << cy << " hfov:" << hfov * 180 / M_PI << " degrees, vfov:" << vfov * 180 / M_PI << " degrees\n";
     double l_inv_k11 = 1.0 / f;
     double l_inv_k13 = -cx / f;
     double l_inv_k22 = 1.0 / f;
@@ -259,13 +262,13 @@ int main(int argc, char **argv) {
     auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 10, false);
-    auto mono_queue = device.getOutputQueue("mono", 1, false);
+    //auto mono_queue = device.getOutputQueue("mono", 1, false);
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
 #ifdef DEPTH_SUBPIXEL
-    uint16_t* disp_frame;
+    uint16_t* disp_data;
 #else
-    uint8_t* disp_frame;
+    uint8_t* disp_data;
 #endif
     std::vector<dai::TrackedFeature> l_features, r_features;
     std::map<int, MyPoint2d> l_prv_features, r_prv_features;
@@ -295,15 +298,32 @@ int main(int argc, char **argv) {
             r_seq = data->getSequenceNum();
             //std::cout << "r ft " << r_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - data->getTimestamp()).count() << " ms\n";
         } else if (q_name == "disparity") {
-            auto disp_data = disp_queue->get<dai::ImgFrame>();
-            disp_seq = disp_data->getSequenceNum();
+            auto disp_frame = disp_queue->get<dai::ImgFrame>();
+            disp_seq = disp_frame->getSequenceNum();
+            auto disp_frame_data = disp_frame->getData();
 #ifdef DEPTH_SUBPIXEL
-            disp_frame = (uint16_t*)disp_data->getData().data();
+            disp_data = (uint16_t*)disp_frame_data.data();
 #else
-            disp_frame = (uint8_t*)disp_data->getData().data();
+            disp_data = (uint8_t*)disp_frame_data.data();
 #endif
-            latest_exp_t = std::chrono::duration<double>(disp_data->getExposureTime()).count();
+            latest_exp_t = std::chrono::duration<double>(disp_frame->getExposureTime()).count();
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
+            mono_pub_c++;
+            if (mono_pub_c > 4) {
+                mono_pub_c = 0;
+                std_msgs::msg::Header header;
+                header.stamp = ros_node->get_clock()->now();
+                header.frame_id = "body";
+                auto img = std::make_unique<sensor_msgs::msg::Image>();
+                img->header = header;
+                img->height = disp_frame->getHeight();
+                img->width = disp_frame->getWidth();
+                img->is_bigendian = 0;
+                img->encoding = "mono16";
+                img->step = img->width*2;
+                img->data = disp_frame_data;
+                img_pub->publish(std::move(img));
+            }
         } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
             auto imuPackets = imuData->packets;
@@ -331,10 +351,10 @@ int main(int argc, char **argv) {
                 imu_ok = true;
                 std::cout<< "imu ok\n";
             }
-        } else if (q_name == "mono") {
+        } /*else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_pub_c++;
-            if (mono_pub_c > 1) {
+            if (mono_pub_c > 4) {
                 mono_pub_c = 0;
                 auto img_data = img_frame->getData();
                 std_msgs::msg::Header header;
@@ -345,12 +365,12 @@ int main(int argc, char **argv) {
                 img->height = img_frame->getHeight();
                 img->width = img_frame->getWidth();
                 img->is_bigendian = 0;
-                img->encoding = "mono8";
-                img->step = img->width;
+                img->encoding = "mono16";
+                img->step = img->width*2;
                 img->data = img_data;
                 img_pub->publish(std::move(img));
             }
-        }
+        }*/
 
         if (l_seq == r_seq && r_seq == disp_seq) {
             //auto t1 = std::chrono::steady_clock::now();
@@ -375,20 +395,20 @@ int main(int argc, char **argv) {
 #ifdef DEPTH_SUBPIXEL
                 float disps[4] = {0};
                 float disp;
-                disps[0] = disp_frame[row * cam_w + col] / 8.0f;
-                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_frame[ceil_row * cam_w + col] / 8.0f;
-                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_frame[row * cam_w + ceil_col] / 8.0f;
+                disps[0] = disp_data[row * cam_w + col] / 8.0f;
+                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_data[ceil_row * cam_w + col] / 8.0f;
+                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_data[row * cam_w + ceil_col] / 8.0f;
                 if (disps[1] && disps[2]) {
-                    disps[3] = disp_frame[ceil_row * cam_w + ceil_col] / 8.0f;
+                    disps[3] = disp_data[ceil_row * cam_w + ceil_col] / 8.0f;
                 }
 #else
                 int disps[4] = {0};
                 int disp;
-                disps[0] = disp_frame[row * cam_w + col];
-                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_frame[ceil_row * cam_w + col];
-                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_frame[row * cam_w + ceil_col];
+                disps[0] = disp_data[row * cam_w + col];
+                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_data[ceil_row * cam_w + col];
+                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_data[row * cam_w + ceil_col];
                 if (disps[1] && disps[2]) {
-                    disps[3] = disp_frame[ceil_row * cam_w + ceil_col];
+                    disps[3] = disp_data[ceil_row * cam_w + ceil_col];
                 }
 #endif
                 for (int i = 0; i < 4; i++) {
