@@ -45,6 +45,9 @@ struct MyPoint2d {
 double big_buf[14*MAX_FEATURES_COUNT+2];
 unsigned char seq_num = 0;
 unsigned int mono_pub_c = 0;
+sensor_msgs::msg::Image disp_img;
+bool disp_img_avail = false;
+bool gogogo = true;
 
 void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
     //std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
@@ -92,10 +95,21 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
     *cy = p1.at<double>(1, 2);
 }
 
+void worker_function(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img_pub) {
+    while (gogogo) {
+        if (disp_img_avail) {
+            img_pub->publish(disp_img);
+            disp_img_avail = false;
+        } else usleep(1000);
+    }
+}
+
 int main(int argc, char **argv) {
     int cam_w, cam_h;
     bool imu_ok = false;
     int ccc=0;
+    int long_ms=0;
+    int short_ms=10000000;
 
     if (argc < 2) {
         printf("usage: %s imu_tk_cali.yml\n", argv[0]);
@@ -281,6 +295,7 @@ int main(int argc, char **argv) {
     //jakaskerl suggest remove this line
     //https://discuss.luxonis.com/d/3484-getqueueevent-takes-much-additional-time/7
     //device.getQueueEvents();
+    std::thread worker(worker_function, img_pub);
 
     while(rclcpp::ok()) {
         auto q_name = device.getQueueEvent();
@@ -311,18 +326,14 @@ int main(int argc, char **argv) {
             mono_pub_c++;
             if (mono_pub_c > 4) {
                 mono_pub_c = 0;
-                std_msgs::msg::Header header;
-                header.stamp = ros_node->get_clock()->now();
-                header.frame_id = "body";
-                auto img = std::make_unique<sensor_msgs::msg::Image>();
-                img->header = header;
-                img->height = disp_frame->getHeight();
-                img->width = disp_frame->getWidth();
-                img->is_bigendian = 0;
-                img->encoding = "mono16";
-                img->step = img->width*2;
-                img->data = disp_frame_data;
-                img_pub->publish(std::move(img));
+                disp_img.header.stamp = ros_node->get_clock()->now();
+                disp_img.height = disp_frame->getHeight();
+                disp_img.width = disp_frame->getWidth();
+                disp_img.is_bigendian = 0;
+                disp_img.encoding = "mono16";
+                disp_img.step = disp_img.width*2;
+                disp_img.data = disp_frame_data;
+                disp_img_avail = true;
             }
         } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
@@ -466,10 +477,15 @@ int main(int argc, char **argv) {
                     }
                 }
             }
+            int cost_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - l_ft_tp).count();
+            if (cost_ms > long_ms) long_ms = cost_ms;
+            else if (cost_ms < short_ms) short_ms = cost_ms;
             ccc++;
             if (ccc > 60) {
                 ccc = 0;
-                std::cout << l_features.size() << " features " << c << " LR matched, latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
+                std::cout << l_features.size() << " features " << c << " LR matched, latency(ms) max " << long_ms << ", min " << short_ms  << "\n";
+                long_ms = 0;
+                short_ms = 10000000;
                 //latency = 40 ms
                 //std::cout << "latency " << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
             }
@@ -490,6 +506,9 @@ int main(int argc, char **argv) {
     }
 
     close(ipc_sock);
+
+    gogogo=false;
+    worker.join();
 
     rclcpp::shutdown();
     printf("bye\n");
