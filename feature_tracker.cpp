@@ -100,7 +100,7 @@ void worker_function(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img_p
         if (disp_img_avail) {
             img_pub->publish(disp_img);
             disp_img_avail = false;
-        } else usleep(1000);
+        } else usleep(5000);
     }
 }
 
