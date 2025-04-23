@@ -35,6 +35,7 @@ using namespace std::chrono_literals;
 //#define H264_STREAMING
 #define VIDEO_FPS 20
 #define VIDEO_BITRATE 1500
+#define DEPTH_SUBPIXEL
 
 struct MyPoint2d {
     double x = 0;
@@ -47,15 +48,22 @@ struct MyPoint2d {
 };
 
 double big_buf[14*MAX_FEATURES_COUNT+2];
-sensor_msgs::msg::Image mono_img;
-bool mono_pub_go = true;
-bool mono_img_ready = false;
 
-void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img_pub) {
-    while (mono_pub_go) {
-        if (mono_img_ready) {
-            img_pub->publish(mono_img);
-            mono_img_ready = false;
+sensor_msgs::msg::Image mono_img;
+sensor_msgs::msg::Image disp_img;
+bool mono_img_avail = false;
+bool disp_img_avail = false;
+bool img_pub_go = true;
+
+void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img_pub, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr disp_img_pub) {
+    while (img_pub_go) {
+        if (mono_img_avail) {
+            mono_img_pub->publish(mono_img);
+            mono_img_avail = false;
+        }
+        if (disp_img_avail) {
+            disp_img_pub->publish(disp_img);
+            disp_img_avail = false;
         }
         std::this_thread::sleep_for(10ms);
     }
@@ -115,6 +123,7 @@ int main(int argc, char **argv) {
     int long_ms=0;
     int short_ms=INT_MAX;
     unsigned int mono_pub_c = 0;
+    unsigned int disp_pub_c = 0;
     unsigned char seq_num = 0;
 
     if (argc < 2) {
@@ -124,7 +133,9 @@ int main(int argc, char **argv) {
 
     rclcpp::init(argc, argv);
     auto ros_node = rclcpp::Node::make_shared("feature_tracker");
-    auto img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", rclcpp::QoS(1).best_effort().durability_volatile());
+    auto mono_img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", rclcpp::QoS(1).best_effort().durability_volatile());
+    auto disp_img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("disparity", rclcpp::QoS(1).best_effort().durability_volatile());
+
 #ifdef REC_IMU
     FILE* imu_file = fopen("oakd_imu.bin", "w");
     FILE* features_file = fopen("oakd_features.bin", "w");
@@ -227,10 +238,15 @@ int main(int argc, char **argv) {
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::MEDIAN_OFF);
+    //depth->initialConfig.setConfidenceThreshold(0); // maximum confidence that it holds a valid value
     depth->setLeftRightCheck(true);
     depth->setExtendedDisparity(false);
+#ifdef DEPTH_SUBPIXEL
     depth->setSubpixel(true);
     depth->setSubpixelFractionalBits(3);
+#else
+    depth->setSubpixel(false);
+#endif
     depth->setDepthAlign(dai::RawStereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_LEFT);
     depth->setAlphaScaling(0);
 
@@ -290,8 +306,10 @@ int main(int argc, char **argv) {
     dai::CalibrationHandler calibData = device.readCalibration2();
     double f, cx, cy;
     float baseline = calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) * 0.01f;
-    std::cout << "stereo baseline:" << baseline << " m\n";
     calc_rect_cam_intri(calibData, &f, &cx, &cy, cam_w, cam_h);
+    float hfov = 2 * atanf(cam_w / (2 * f));
+    float vfov = 2 * atanf(cam_h / (2 * f));
+    std::cout << "stereo baseline:" << baseline << " m, f:" << f << " px, cx:" << cx << ", cy:" << cy << " hfov:" << hfov * 180 / M_PI << " degrees, vfov:" << vfov * 180 / M_PI << " degrees\n";
     double l_inv_k11 = 1.0 / f;
     double l_inv_k13 = -cx / f;
     double l_inv_k22 = 1.0 / f;
@@ -320,7 +338,11 @@ int main(int argc, char **argv) {
 #endif
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
-    uint16_t* disp_frame;
+#ifdef DEPTH_SUBPIXEL
+    uint16_t* disp_data;
+#else
+    uint8_t* disp_data;
+#endif
     std::vector<dai::TrackedFeature> l_features, r_features;
     std::map<int, MyPoint2d> l_prv_features, r_prv_features;
     double features_ts, prv_features_ts;
@@ -333,7 +355,7 @@ int main(int argc, char **argv) {
     //https://discuss.luxonis.com/d/3484-getqueueevent-takes-much-additional-time/7
     //device.getQueueEvents();
 
-    std::thread img_pub_worker(img_pub_func, img_pub);
+    std::thread img_pub_worker(img_pub_func, mono_img_pub, disp_img_pub);
 
     while(rclcpp::ok()) {
         auto q_name = device.getQueueEvent();
@@ -351,11 +373,33 @@ int main(int argc, char **argv) {
             r_seq = data->getSequenceNum();
             //std::cout << "r ft " << r_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - data->getTimestamp()).count() << " ms\n";
         } else if (q_name == "disparity") {
-            auto disp_data = disp_queue->get<dai::ImgFrame>();
-            disp_seq = disp_data->getSequenceNum();
-            disp_frame = (uint16_t*)disp_data->getData().data();
-            latest_exp_t = std::chrono::duration<double>(disp_data->getExposureTime()).count();
+            auto disp_frame = disp_queue->get<dai::ImgFrame>();
+            disp_seq = disp_frame->getSequenceNum();
+            auto disp_frame_data = disp_frame->getData();
+#ifdef DEPTH_SUBPIXEL
+            disp_data = (uint16_t*)disp_frame_data.data();
+#else
+            disp_data = (uint8_t*)disp_frame_data.data();
+#endif
+            latest_exp_t = std::chrono::duration<double>(disp_frame->getExposureTime()).count();
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
+            disp_pub_c++;
+            if (disp_pub_c > 4) {
+                disp_pub_c = 0;
+                disp_img.header.stamp = ros_node->get_clock()->now();
+                disp_img.height = disp_frame->getHeight();
+                disp_img.width = disp_frame->getWidth();
+                disp_img.is_bigendian = 0;
+#ifdef DEPTH_SUBPIXEL
+                disp_img.encoding = "mono16";
+                disp_img.step = disp_img.width*2;
+#else
+                disp_img.encoding = "mono8";
+                disp_img.step = disp_img.width;
+#endif
+                disp_img.data = disp_frame_data;
+                disp_img_avail = true;
+            }
         } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
             auto imuPackets = imuData->packets;
@@ -378,9 +422,6 @@ int main(int argc, char **argv) {
                 big_buf[5] = -gyro_cali(0,0);
                 big_buf[6] = gyro_cali(1,0);
                 sendto(ipc_sock, big_buf, 7*sizeof(double), 0, (struct sockaddr*)&imu_addr, sizeof(struct sockaddr_un));
-#ifdef REC_IMU
-                fwrite(big_buf, sizeof(double), 7, imu_file);
-#endif
             }
             if (!imu_ok) {
                 imu_ok = true;
@@ -416,7 +457,7 @@ int main(int argc, char **argv) {
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_pub_c++;
-            if (mono_pub_c > 3) {
+            if (mono_pub_c > 4) {
                 mono_pub_c = 0;
                 mono_img.header.stamp = ros_node->get_clock()->now();
                 mono_img.height = img_frame->getHeight();
@@ -425,7 +466,7 @@ int main(int argc, char **argv) {
                 mono_img.encoding = "mono8";
                 mono_img.step = mono_img.width;
                 mono_img.data = img_frame->getData();
-                mono_img_ready = true;
+                mono_img_avail = true;
             }
         }
 
@@ -449,15 +490,27 @@ int main(int argc, char **argv) {
                 int col = x;
                 int ceil_row = ceilf(y);
                 int ceil_col = ceilf(x);
+#ifdef DEPTH_SUBPIXEL
                 float disps[4] = {0};
-                disps[0] = disp_frame[row * cam_w + col] / 8.0;
-                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_frame[ceil_row * cam_w + col] / 8.0;
-                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_frame[row * cam_w + ceil_col] / 8.0;
+                float disp;
+                disps[0] = disp_data[row * cam_w + col] / 8.0f;
+                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_data[ceil_row * cam_w + col] / 8.0f;
+                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_data[row * cam_w + ceil_col] / 8.0f;
                 if (disps[1] && disps[2]) {
-                    disps[3] = disp_frame[ceil_row * cam_w + ceil_col] / 8.0;
+                    disps[3] = disp_data[ceil_row * cam_w + ceil_col] / 8.0f;
                 }
+#else
+                int disps[4] = {0};
+                int disp;
+                disps[0] = disp_data[row * cam_w + col];
+                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_data[ceil_row * cam_w + col];
+                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_data[row * cam_w + ceil_col];
+                if (disps[1] && disps[2]) {
+                    disps[3] = disp_data[ceil_row * cam_w + ceil_col];
+                }
+#endif
                 for (int i = 0; i < 4; i++) {
-                    float disp = disps[i];
+                    disp = disps[i];
                     if (disp > 0) {
                         bool pair_found = false;
                         for (const auto &r_feature : r_features) {
@@ -526,9 +579,6 @@ int main(int argc, char **argv) {
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
-#ifdef REC_IMU
-                fwrite(big_buf, sizeof(double), 14*MAX_FEATURES_COUNT+2, features_file);
-#endif
             }
             l_prv_features = features;
             prv_features_ts = features_ts;
@@ -542,16 +592,18 @@ int main(int argc, char **argv) {
     }
 
     close(ipc_sock);
+
 #ifdef REC_IMU
     fclose(imu_file);
     fclose(features_file);
 #endif
+
 #ifdef H264_STREAMING
     shmdt(h264_pkt_data);
     shmctl(shmid, IPC_RMID, NULL);
 #endif
 
-    mono_pub_go = false;
+    img_pub_go = false;
     img_pub_worker.join();
 
     rclcpp::shutdown();
