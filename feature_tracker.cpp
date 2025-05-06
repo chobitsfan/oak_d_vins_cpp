@@ -384,7 +384,7 @@ int main(int argc, char **argv) {
             latest_exp_t = std::chrono::duration<double>(disp_frame->getExposureTime()).count();
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
             disp_pub_c++;
-            if (disp_pub_c > 4) {
+            if (disp_pub_c > 3) {
                 disp_pub_c = 0;
                 disp_img.header.stamp = ros_node->get_clock()->now();
                 disp_img.height = disp_frame->getHeight();
@@ -457,7 +457,7 @@ int main(int argc, char **argv) {
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_pub_c++;
-            if (mono_pub_c > 4) {
+            if (mono_pub_c > 3) {
                 mono_pub_c = 0;
                 mono_img.header.stamp = ros_node->get_clock()->now();
                 mono_img.height = img_frame->getHeight();
