@@ -346,7 +346,6 @@ int main(int argc, char **argv) {
     std::vector<dai::TrackedFeature> l_features, r_features;
     std::map<int, MyPoint2d> l_prv_features, r_prv_features;
     double features_ts, prv_features_ts;
-    double latest_exp_t = 0;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
 
@@ -381,7 +380,6 @@ int main(int argc, char **argv) {
 #else
             disp_data = (uint8_t*)disp_frame_data.data();
 #endif
-            latest_exp_t = std::chrono::duration<double>(disp_frame->getExposureTime()).count();
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
             disp_pub_c++;
             if (disp_pub_c > 3) {
@@ -477,7 +475,6 @@ int main(int argc, char **argv) {
             disp_seq = -3;
             std::map<int , MyPoint2d> features;
             int c = 0;
-            features_ts = features_ts - latest_exp_t * 0.5;
             big_buf[1] = features_ts;
             double* buf_ptr = big_buf + 2;
             for (const auto &l_feature : l_features) {
