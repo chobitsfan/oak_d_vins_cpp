@@ -363,8 +363,8 @@ int main(int argc, char **argv) {
             auto data = outputFeaturesLeftQueue->get<dai::TrackedFeatures>();
             l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
-            features_ts = std::chrono::duration<double>(data->getTimestampDevice().time_since_epoch()).count();
             l_ft_tp = data->getTimestamp();
+            features_ts = std::chrono::duration<double>(l_ft_tp.time_since_epoch()).count();
             //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
         } else if (q_name == "trackedFeaturesRight") {
             auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
@@ -405,7 +405,7 @@ int main(int argc, char **argv) {
                 auto& acc = imuPacket.acceleroMeter;
                 auto& gyro = imuPacket.gyroscope;
                 //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
-                big_buf[0] = std::chrono::duration<double>(acc.getTimestampDevice().time_since_epoch()).count();
+                big_buf[0] = std::chrono::duration<double>(acc.getTimestamp().time_since_epoch()).count();
                 //if (big_buf[0] - last_acc_t > 0.007) printf("imu jitter %f\n", big_buf[0] - last_acc_t);
                 //last_acc_t = big_buf[0];
                 cv::Mat acc_raw = (cv::Mat_<double>(3,1) << acc.x, acc.y, acc.z);
