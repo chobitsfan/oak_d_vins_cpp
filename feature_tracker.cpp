@@ -32,7 +32,8 @@
 using namespace std::chrono_literals;
 
 #define MAX_FEATURES_COUNT 60
-//#define H264_STREAMING
+#define H264_STREAMING
+//#define VIDEO_STREAMING
 #define VIDEO_FPS 20
 #define VIDEO_BITRATE 1500
 #define DEPTH_SUBPIXEL
@@ -124,7 +125,12 @@ int main(int argc, char **argv) {
     int short_ms=INT_MAX;
     unsigned int mono_pub_c = 0;
     unsigned int disp_pub_c = 0;
+
     unsigned char seq_num = 0;
+    int hcc_cnt1=0;
+    unsigned int pre_time1=0;
+    struct timespec tm, now;
+    unsigned int curr_time=0;
 
     if (argc < 2) {
         printf("usage: %s imu_tk_cali.yml\n", argv[0]);
@@ -147,6 +153,12 @@ int main(int argc, char **argv) {
     // shmget returns an identifier in shmid
     int shmid = shmget(key, 500000, 0666 | IPC_CREAT);
     unsigned char* h264_pkt_data = (unsigned char*)shmat(shmid, (void*)0, 0);
+#elif defined(VIDEO_STREAMING) // NV12 format
+    // IPC shared memory
+    key_t key = ftok("shmfile", 65);
+    // shmget returns an identifier in shmid
+    int shmid = shmget(key, 3110402, 0666 | IPC_CREAT); // 1920x1080x2 + 2
+    unsigned char* video_pkt_data = (unsigned char*)shmat(shmid, (void*)0, 0);
 #endif
 
     cv::FileStorage imu_yml;
@@ -191,6 +203,34 @@ int main(int argc, char **argv) {
 #ifdef H264_STREAMING
     auto camRgb = pipeline.create<dai::node::ColorCamera>();
     auto videoEnc = pipeline.create<dai::node::VideoEncoder>();
+    auto xout_h264 = pipeline.create<dai::node::XLinkOut>();
+    xout_h264->setStreamName("h264");
+    xout_h264->input.setBlocking(false);
+    xout_h264->input.setQueueSize(1);
+    camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
+    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
+    camRgb->setFps(VIDEO_FPS);
+    camRgb->setNumFramesPool(2, 2, 2, 2, 2);
+    camRgb->setIsp3aFps(5);
+    videoEnc->setDefaultProfilePreset(VIDEO_FPS, dai::VideoEncoderProperties::Profile::H264_MAIN);
+    videoEnc->setKeyframeFrequency(VIDEO_FPS*2);
+    videoEnc->setBitrateKbps(VIDEO_BITRATE);
+    videoEnc->setNumFramesPool(2);
+    videoEnc->input.setQueueSize(1);
+    videoEnc->input.setBlocking(false);
+    camRgb->video.link(videoEnc->input);
+    videoEnc->bitstream.link(xout_h264->input);
+#elif defined(VIDEO_STREAMING)
+    auto camRgb = pipeline.create<dai::node::ColorCamera>();
+    auto xoutVideo = pipeline.create<dai::node::XLinkOut>();
+    camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
+    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
+    camRgb->setFps(VIDEO_FPS);
+    camRgb->video.link(xoutVideo->input);
+    camRgb->setNumFramesPool(2, 2, 2, 2, 2);
+    xoutVideo->setStreamName("video");
+    xoutVideo->input.setBlocking(false);
+    xoutVideo->input.setQueueSize(1);
 #endif
     auto manip = pipeline.create<dai::node::ImageManip>();
 
@@ -200,18 +240,12 @@ int main(int argc, char **argv) {
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
     auto xout_mono = pipeline.create<dai::node::XLinkOut>();
-#ifdef H264_STREAMING
-    auto xout_h264 = pipeline.create<dai::node::XLinkOut>();
-#endif
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
     xout_mono->setStreamName("mono");
-#ifdef H264_STREAMING
-    xout_h264->setStreamName("h264");
-#endif
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
@@ -254,24 +288,11 @@ int main(int argc, char **argv) {
     imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
     // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
     // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
-    imu->setBatchReportThreshold(1);
+    imu->setBatchReportThreshold(10);
     // maximum number of IMU packets in a batch, if it's reached device will block sending until host can receive it
     // if lower or equal to batchReportThreshold then the sending is always blocking on device
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
-    imu->setMaxBatchReports(10);
-
-#ifdef H264_STREAMING
-    camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
-    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
-    camRgb->setFps(VIDEO_FPS);
-    camRgb->setNumFramesPool(2, 2, 2, 2, 2);
-    videoEnc->setDefaultProfilePreset(VIDEO_FPS, dai::VideoEncoderProperties::Profile::H264_MAIN);
-    videoEnc->setKeyframeFrequency(VIDEO_FPS*2);
-    videoEnc->setBitrateKbps(VIDEO_BITRATE);
-    videoEnc->setNumFramesPool(2);
-    videoEnc->input.setQueueSize(2);
-    videoEnc->input.setBlocking(false);
-#endif
+    imu->setMaxBatchReports(20);
 
     // Linking
     monoLeft->out.link(depth->left);
@@ -286,11 +307,6 @@ int main(int argc, char **argv) {
     imu->out.link(xout_imu->input);
     monoLeft->out.link(manip->inputImage);
     manip->out.link(xout_mono->input);
-#ifdef H264_STREAMING
-    //monoLeft->out.link(videoEnc->input);
-    camRgb->video.link(videoEnc->input);
-    videoEnc->bitstream.link(xout_h264->input);
-#endif
 
     // Connect to device and start pipeline
     dai::Device device(pipeline);
@@ -324,8 +340,8 @@ int main(int argc, char **argv) {
         std::cout << "stereo pair baseline:" << s_pair.baseline << " cm\n";
     }*/
 
-    //device.setLogOutputLevel(dai::LogLevel::DEBUG);
-    //device.setLogLevel(dai::LogLevel::DEBUG);
+    device.setLogOutputLevel(dai::LogLevel::WARN);
+    device.setLogLevel(dai::LogLevel::WARN);
 
     // Output queues used to receive the results
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
@@ -335,6 +351,8 @@ int main(int argc, char **argv) {
     auto mono_queue = device.getOutputQueue("mono", 1, false);
 #ifdef H264_STREAMING
     auto video = device.getOutputQueue("h264", 1, false);
+#elif defined(VIDEO_STREAMING)
+    auto video = device.getOutputQueue("video", 1, false);
 #endif
 
     int l_seq = -1, r_seq = -2, disp_seq = -3;
@@ -425,8 +443,8 @@ int main(int argc, char **argv) {
                 imu_ok = true;
                 std::cout<< "imu ok\n";
             }
-        } else if (q_name == "h264") {
 #ifdef H264_STREAMING
+        } else if (q_name == "h264") {
             if (!h264_ok) {
                 h264_ok = true;
                 std::cout<<"h264 ok\n";
@@ -451,6 +469,42 @@ int main(int argc, char **argv) {
             seq_num++;
             if(seq_num == 0xff) seq_num = 0;
             h264_pkt_data[h264_pkt_len+5] = 1;
+#elif defined(VIDEO_STREAMING)
+        } else if (q_name == "video") {
+            // Get BGR frame from NV12 encoded video frame
+            // IPC data structure: length+data+seq_num+flag
+            // length - size of h264 bitstream (4 bytes)
+            // data - h264 bitstream (n bytes)
+            // seq_num - 1 byte
+            // flag - 1 byte
+            auto videoPacket = video->get<dai::ImgFrame>();
+            int video_pkt_len = videoPacket->getData().size();
+
+			/*clock_gettime(CLOCK_MONOTONIC, &tm);
+			curr_time = tm.tv_sec * 1000 + tm.tv_nsec / 1000000L;
+			hcc_cnt1++;
+
+			if(pre_time1 == 0)
+				pre_time1 = curr_time ;
+
+			if( curr_time - pre_time1 > 1000 )
+			{
+				printf("hcc_cnt1=%d\n", hcc_cnt1);
+				hcc_cnt1 = 0;
+				pre_time1 = curr_time ;
+			}
+			printf("videoIn len=%d\n", videoPacket->getData().size());
+            printf("seq_num=%d\n", seq_num);*/
+
+			video_pkt_data[0] = (video_pkt_len >> 24) & 0xff;
+			video_pkt_data[1] = (video_pkt_len >> 16) & 0xff;
+			video_pkt_data[2] = (video_pkt_len >> 8) & 0xff;
+			video_pkt_data[3] = video_pkt_len & 0xff;
+			memcpy(video_pkt_data+4, videoPacket->getData().data(), video_pkt_len);
+            video_pkt_data[video_pkt_len+4] = seq_num;
+            seq_num++;
+            if(seq_num == 0xff) seq_num = 0;
+            video_pkt_data[video_pkt_len+5] = 1;
 #endif
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
@@ -597,6 +651,9 @@ int main(int argc, char **argv) {
 
 #ifdef H264_STREAMING
     shmdt(h264_pkt_data);
+    shmctl(shmid, IPC_RMID, NULL);
+#elif defined(VIDEO_STREAMING)
+    shmdt(video_pkt_data);
     shmctl(shmid, IPC_RMID, NULL);
 #endif
 
