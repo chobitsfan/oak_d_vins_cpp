@@ -36,7 +36,7 @@ using namespace std::chrono_literals;
 #define VIDEO_FPS 20
 #define VIDEO_BITRATE 1500
 #define DEPTH_SUBPIXEL
-#define BMI270_ACC_FILT_GROUP_DELAY 0.0054 // bmi270 low poass filter group delay, see datasheet
+#define BMI270_ACC_FILT_GROUP_DELAY 0.005 // bmi270 low poass filter group delay, see datasheet
 
 struct MyPoint2d {
     double x = 0;
@@ -187,7 +187,6 @@ int main(int argc, char **argv) {
     auto monoLeft = pipeline.create<dai::node::MonoCamera>();
     auto monoRight = pipeline.create<dai::node::MonoCamera>();
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
-    auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
 #ifdef H264_STREAMING
     auto camRgb = pipeline.create<dai::node::ColorCamera>();
@@ -196,7 +195,6 @@ int main(int argc, char **argv) {
     auto manip = pipeline.create<dai::node::ImageManip>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
-    auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
@@ -206,7 +204,6 @@ int main(int argc, char **argv) {
 #endif
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
-    xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
     xout_mono->setStreamName("mono");
@@ -225,7 +222,6 @@ int main(int argc, char **argv) {
     manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
 
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
-    featureTrackerRight->initialConfig.setNumTargetFeatures(16*5);
     /*dai::RawFeatureTrackerConfig config = featureTrackerLeft->initialConfig.get();
     config.cornerDetector.numMaxFeatures = 100;
     featureTrackerLeft->initialConfig.set(config);
@@ -235,7 +231,6 @@ int main(int argc, char **argv) {
     // By default the least mount of resources are allocated
     // increasing it improves performance when optical flow is enabled
     featureTrackerLeft->setHardwareResources(2, 2);
-    featureTrackerRight->setHardwareResources(2, 2);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::MEDIAN_OFF);
@@ -255,11 +250,11 @@ int main(int argc, char **argv) {
     imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
     // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
     // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
-    imu->setBatchReportThreshold(1);
+    imu->setBatchReportThreshold(5);
     // maximum number of IMU packets in a batch, if it's reached device will block sending until host can receive it
     // if lower or equal to batchReportThreshold then the sending is always blocking on device
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
-    imu->setMaxBatchReports(10);
+    imu->setMaxBatchReports(20);
 
 #ifdef H264_STREAMING
     camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
@@ -280,8 +275,6 @@ int main(int argc, char **argv) {
     featureTrackerLeft->outputFeatures.link(xoutTrackedFeaturesLeft->input);
 
     monoRight->out.link(depth->right);
-    depth->rectifiedRight.link(featureTrackerRight->inputImage);
-    featureTrackerRight->outputFeatures.link(xoutTrackedFeaturesRight->input);
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
@@ -325,12 +318,11 @@ int main(int argc, char **argv) {
         std::cout << "stereo pair baseline:" << s_pair.baseline << " cm\n";
     }*/
 
-    //device.setLogOutputLevel(dai::LogLevel::DEBUG);
-    //device.setLogLevel(dai::LogLevel::DEBUG);
+    device.setLogOutputLevel(dai::LogLevel::WARN);
+    device.setLogLevel(dai::LogLevel::WARN);
 
     // Output queues used to receive the results
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
-    auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 10, false);
     auto mono_queue = device.getOutputQueue("mono", 1, false);
@@ -338,14 +330,14 @@ int main(int argc, char **argv) {
     auto video = device.getOutputQueue("h264", 1, false);
 #endif
 
-    int l_seq = -1, r_seq = -2, disp_seq = -3;
+    int64_t l_seq = -1, disp_seq = -3;
 #ifdef DEPTH_SUBPIXEL
     uint16_t* disp_data;
 #else
     uint8_t* disp_data;
 #endif
-    std::vector<dai::TrackedFeature> l_features, r_features;
-    std::map<int, MyPoint2d> l_prv_features, r_prv_features;
+    std::vector<dai::TrackedFeature> l_features;
+    std::map<int, MyPoint2d> l_prv_features;
     double features_ts, prv_features_ts;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
@@ -367,11 +359,6 @@ int main(int argc, char **argv) {
             l_ft_tp = data->getTimestamp();
             features_ts = std::chrono::duration<double>(l_ft_tp.time_since_epoch()).count();
             //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
-        } else if (q_name == "trackedFeaturesRight") {
-            auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
-            r_features = data->trackedFeatures;
-            r_seq = data->getSequenceNum();
-            //std::cout << "r ft " << r_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - data->getTimestamp()).count() << " ms\n";
         } else if (q_name == "disparity") {
             auto disp_frame = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_frame->getSequenceNum();
@@ -469,10 +456,9 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (l_seq == r_seq && r_seq == disp_seq) {
+        if (l_seq == disp_seq) {
             //auto t1 = std::chrono::steady_clock::now();
             l_seq = -1;
-            r_seq = -2;
             disp_seq = -3;
             std::map<int , MyPoint2d> features;
             int c = 0;
@@ -481,85 +467,42 @@ int main(int argc, char **argv) {
             for (const auto &l_feature : l_features) {
                 float x = l_feature.position.x;
                 float y = l_feature.position.y;
-                double cur_un_x = l_inv_k11 * x + l_inv_k13;
-                double cur_un_y = l_inv_k22 * y + l_inv_k23;
-                features[l_feature.id] = MyPoint2d(cur_un_x, cur_un_y);
-                int row = y;
-                int col = x;
-                int ceil_row = ceilf(y);
-                int ceil_col = ceilf(x);
-#ifdef DEPTH_SUBPIXEL
-                float disps[4] = {0};
-                float disp;
-                disps[0] = disp_data[row * cam_w + col] / 8.0f;
-                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_data[ceil_row * cam_w + col] / 8.0f;
-                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_data[row * cam_w + ceil_col] / 8.0f;
-                if (disps[1] && disps[2]) {
-                    disps[3] = disp_data[ceil_row * cam_w + ceil_col] / 8.0f;
-                }
-#else
-                int disps[4] = {0};
-                int disp;
-                disps[0] = disp_data[row * cam_w + col];
-                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_data[ceil_row * cam_w + col];
-                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_data[row * cam_w + ceil_col];
-                if (disps[1] && disps[2]) {
-                    disps[3] = disp_data[ceil_row * cam_w + ceil_col];
-                }
-#endif
-                for (int i = 0; i < 4; i++) {
-                    disp = disps[i];
-                    if (disp > 0) {
-                        bool pair_found = false;
-                        for (const auto &r_feature : r_features) {
-                            float dy = y - r_feature.position.y;
-                            float dx = x - disp - r_feature.position.x;
-                            if (fabsf(dy) <= 1 && fabsf(dx) <= 2) { //pair found
-                                pair_found = true;
-                                double dt = features_ts - prv_features_ts;
-                                double vx = 0, vy = 0;
-                                auto prv_pos = l_prv_features.find(l_feature.id);
-                                if (prv_pos != l_prv_features.end()) {
-                                    vx = (cur_un_x - prv_pos->second.x) / dt;
-                                    vy = (cur_un_y - prv_pos->second.y) / dt;
-                                }
-                                buf_ptr[0] = l_feature.id;
-                                buf_ptr[1] = cur_un_x;
-                                buf_ptr[2] = cur_un_y;
-                                buf_ptr[3] = x;
-                                buf_ptr[4] = y;
-                                buf_ptr[5] = vx;
-                                buf_ptr[6] = vy;
-
-                                x = r_feature.position.x;
-                                y = r_feature.position.y;
-                                vx = 0;
-                                vy = 0;
-                                cur_un_x = r_inv_k11 * x + r_inv_k13;
-                                cur_un_y = r_inv_k22 * y + r_inv_k23;
-                                prv_pos = r_prv_features.find(r_feature.id);
-                                if (prv_pos != r_prv_features.end()) {
-                                    vx = (cur_un_x - prv_pos->second.x) / dt;
-                                    vy = (cur_un_y - prv_pos->second.y) / dt;
-                                }
-                                buf_ptr[7] = cur_un_x;
-                                buf_ptr[8] = cur_un_y;
-                                buf_ptr[9] = x;
-                                buf_ptr[10] = y;
-                                buf_ptr[11] = vx;
-                                buf_ptr[12] = vy;
-                                buf_ptr[13] = f * baseline / disp;
-
-                                if (c < MAX_FEATURES_COUNT) {
-                                    ++c;
-                                    buf_ptr += 14;
-                                }
-
-                                break;
-                            }
-                        }
-                        if (pair_found) break;
+                int row = roundf(y);
+                int col = roundf(x);
+                if (row >= cam_h) row = cam_h - 1;
+                if (col >= cam_w) col = cam_w - 1;
+                float disp = disp_data[row * cam_w + col] / 8.0f;
+                if (disp > 0 && x - disp > 0) {
+                    double cur_un_x = l_inv_k11 * x + l_inv_k13;
+                    double cur_un_y = l_inv_k22 * y + l_inv_k23;
+                    features[l_feature.id] = MyPoint2d(cur_un_x, cur_un_y);
+                    double dt = features_ts - prv_features_ts;
+                    double vx = 0, vy = 0;
+                    auto prv_pos = l_prv_features.find(l_feature.id);
+                    if (prv_pos != l_prv_features.end()) {
+                        vx = (cur_un_x - prv_pos->second.x) / dt;
+                        vy = (cur_un_y - prv_pos->second.y) / dt;
                     }
+                    buf_ptr[0] = l_feature.id;
+                    buf_ptr[1] = cur_un_x;
+                    buf_ptr[2] = cur_un_y;
+                    buf_ptr[3] = x;
+                    buf_ptr[4] = y;
+                    buf_ptr[5] = vx;
+                    buf_ptr[6] = vy;
+                    x = x - disp;
+                    cur_un_x = l_inv_k11 * x + l_inv_k13;
+                    buf_ptr[7] = cur_un_x;
+                    buf_ptr[8] = cur_un_y;
+                    buf_ptr[9] = x;
+                    buf_ptr[10] = y;
+                    buf_ptr[11] = vx;
+                    buf_ptr[12] = vy;
+                    buf_ptr[13] = f * baseline / disp;
+                    if (c < MAX_FEATURES_COUNT) {
+                        ++c;
+                        buf_ptr += 14;
+                    } else break;
                 }
             }
             int cost_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - l_ft_tp).count();
@@ -580,10 +523,6 @@ int main(int argc, char **argv) {
             }
             l_prv_features = features;
             prv_features_ts = features_ts;
-            r_prv_features.clear();
-            for (const auto &r_feature : r_features) {
-                r_prv_features[r_feature.id] = MyPoint2d(r_inv_k11 * r_feature.position.x + r_inv_k13, r_inv_k22 * r_feature.position.y + r_inv_k23);
-            }
             //auto t2 = std::chrono::steady_clock::now();
             //std::cout << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
         }
