@@ -38,13 +38,17 @@ using namespace std::chrono_literals;
 #define DEPTH_SUBPIXEL
 #define BMI270_ACC_FILT_GROUP_DELAY 0.005 // bmi270 low poass filter group delay, see datasheet
 
-struct MyPoint2d {
+struct MyPoint4d {
     double x = 0;
     double y = 0;
-    MyPoint2d() {}
-    MyPoint2d(double px, double py) {
+    double rx = 0;
+    double ry = 0;
+    MyPoint4d() {}
+    MyPoint4d(double px, double py, double rpx, double rpy) {
         x = px;
         y = py;
+        rx = rpx;
+        ry = rpy;
     }
 };
 
@@ -318,8 +322,8 @@ int main(int argc, char **argv) {
         std::cout << "stereo pair baseline:" << s_pair.baseline << " cm\n";
     }*/
 
-    device.setLogOutputLevel(dai::LogLevel::WARN);
-    device.setLogLevel(dai::LogLevel::WARN);
+    //device.setLogOutputLevel(dai::LogLevel::WARN);
+    //device.setLogLevel(dai::LogLevel::WARN);
 
     // Output queues used to receive the results
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
@@ -337,7 +341,7 @@ int main(int argc, char **argv) {
     uint8_t* disp_data;
 #endif
     std::vector<dai::TrackedFeature> l_features;
-    std::map<int, MyPoint2d> l_prv_features;
+    std::map<int, MyPoint4d> prv_features;
     double features_ts, prv_features_ts;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
@@ -460,7 +464,7 @@ int main(int argc, char **argv) {
             //auto t1 = std::chrono::steady_clock::now();
             l_seq = -1;
             disp_seq = -3;
-            std::map<int , MyPoint2d> features;
+            std::map<int , MyPoint4d> features;
             int c = 0;
             big_buf[1] = features_ts;
             double* buf_ptr = big_buf + 2;
@@ -475,11 +479,10 @@ int main(int argc, char **argv) {
                 if (disp > 0 && x - disp > 0) {
                     double cur_un_x = l_inv_k11 * x + l_inv_k13;
                     double cur_un_y = l_inv_k22 * y + l_inv_k23;
-                    features[l_feature.id] = MyPoint2d(cur_un_x, cur_un_y);
                     double dt = features_ts - prv_features_ts;
                     double vx = 0, vy = 0;
-                    auto prv_pos = l_prv_features.find(l_feature.id);
-                    if (prv_pos != l_prv_features.end()) {
+                    auto prv_pos = prv_features.find(l_feature.id);
+                    if (prv_pos != prv_features.end()) {
                         vx = (cur_un_x - prv_pos->second.x) / dt;
                         vy = (cur_un_y - prv_pos->second.y) / dt;
                     }
@@ -491,14 +494,20 @@ int main(int argc, char **argv) {
                     buf_ptr[5] = vx;
                     buf_ptr[6] = vy;
                     x = x - disp;
-                    cur_un_x = l_inv_k11 * x + l_inv_k13;
-                    buf_ptr[7] = cur_un_x;
-                    buf_ptr[8] = cur_un_y;
+                    double r_cur_un_x = r_inv_k11 * x + r_inv_k13;
+                    double r_cur_un_y = r_inv_k22 * y + r_inv_k23;
+                    if (prv_pos != prv_features.end()) {
+                        vx = (r_cur_un_x - prv_pos->second.rx) / dt;
+                        vy = (r_cur_un_y - prv_pos->second.ry) / dt;
+                    }
+                    buf_ptr[7] = r_cur_un_x;
+                    buf_ptr[8] = r_cur_un_y;
                     buf_ptr[9] = x;
                     buf_ptr[10] = y;
                     buf_ptr[11] = vx;
                     buf_ptr[12] = vy;
                     buf_ptr[13] = f * baseline / disp;
+                    features[l_feature.id] = MyPoint4d(cur_un_x, cur_un_y, r_cur_un_x, r_cur_un_y);
                     if (c < MAX_FEATURES_COUNT) {
                         ++c;
                         buf_ptr += 14;
@@ -521,7 +530,7 @@ int main(int argc, char **argv) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
             }
-            l_prv_features = features;
+            prv_features = features;
             prv_features_ts = features_ts;
             //auto t2 = std::chrono::steady_clock::now();
             //std::cout << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
