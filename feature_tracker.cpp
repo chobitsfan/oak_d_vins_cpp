@@ -36,7 +36,6 @@ using namespace std::chrono_literals;
 #define VIDEO_FPS 20
 #define VIDEO_BITRATE 1500
 #define DEPTH_SUBPIXEL
-#define BMI270_ACC_FILT_GROUP_DELAY 0.005 // bmi270 low poass filter group delay, see datasheet
 
 struct MyPoint4d {
     double x = 0;
@@ -397,7 +396,7 @@ int main(int argc, char **argv) {
                 auto& acc = imuPacket.acceleroMeter;
                 auto& gyro = imuPacket.gyroscope;
                 //std::cout << "imu latency, acc:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - acc.getTimestamp()).count() << " ms, gyro:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - gyro.getTimestamp()).count() << " ms\n";
-                big_buf[0] = std::chrono::duration<double>(acc.getTimestamp().time_since_epoch()).count() - BMI270_ACC_FILT_GROUP_DELAY;
+                big_buf[0] = std::chrono::duration<double>(acc.getTimestamp().time_since_epoch()).count();
                 //if (big_buf[0] - last_acc_t > 0.007) printf("imu jitter %f\n", big_buf[0] - last_acc_t);
                 //last_acc_t = big_buf[0];
                 cv::Mat acc_raw = (cv::Mat_<double>(3,1) << acc.x, acc.y, acc.z);
