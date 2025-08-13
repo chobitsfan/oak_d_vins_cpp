@@ -31,7 +31,7 @@
 
 using namespace std::chrono_literals;
 
-#define MAX_FEATURES_COUNT 60
+#define MAX_FEATURES_COUNT 80
 //#define H264_STREAMING
 #define VIDEO_FPS 20
 #define VIDEO_BITRATE 1500
@@ -195,7 +195,7 @@ int main(int argc, char **argv) {
     auto camRgb = pipeline.create<dai::node::ColorCamera>();
     auto videoEnc = pipeline.create<dai::node::VideoEncoder>();
 #endif
-    auto manip = pipeline.create<dai::node::ImageManip>();
+    //auto manip = pipeline.create<dai::node::ImageManip>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
     auto depth = pipeline.create<dai::node::StereoDepth>();
@@ -222,10 +222,13 @@ int main(int argc, char **argv) {
     monoRight->setCamera("right");
     monoRight->setFps(20);
 
-    manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
+    //manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
 
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
-    /*dai::RawFeatureTrackerConfig config = featureTrackerLeft->initialConfig.get();
+    //featureTrackerLeft->initialConfig.setHwMotionEstimation();
+    featureTrackerLeft->setHardwareResources(2, 2);
+    /*dai::RawFeatureTrackerConfig ft_config = featureTrackerLeft->initialConfig.get();
+    printf("feature tracker enableSorting %d\n", ft_config.cornerDetector.enableSorting);
     config.cornerDetector.numMaxFeatures = 100;
     featureTrackerLeft->initialConfig.set(config);
     config = featureTrackerRight->initialConfig.get();
@@ -233,7 +236,6 @@ int main(int argc, char **argv) {
     featureTrackerRight->initialConfig.set(config);*/
     // By default the least mount of resources are allocated
     // increasing it improves performance when optical flow is enabled
-    featureTrackerLeft->setHardwareResources(2, 2);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::MEDIAN_OFF);
@@ -248,6 +250,12 @@ int main(int argc, char **argv) {
 #endif
     depth->setDepthAlign(dai::RawStereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_LEFT);
     depth->setAlphaScaling(0);
+    auto config = depth->initialConfig.get();
+    config.postProcessing.speckleFilter.enable = false;
+    config.postProcessing.temporalFilter.enable = false;
+    config.postProcessing.spatialFilter.enable = false;
+    config.postProcessing.decimationFilter.decimationFactor = 1;
+    depth->initialConfig.set(config);
 
     imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_RAW, 200);
     imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
@@ -275,14 +283,15 @@ int main(int argc, char **argv) {
     // Linking
     monoLeft->out.link(depth->left);
     depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
+    depth->rectifiedLeft.link(xout_mono->input);
     featureTrackerLeft->outputFeatures.link(xoutTrackedFeaturesLeft->input);
 
     monoRight->out.link(depth->right);
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
-    monoLeft->out.link(manip->inputImage);
-    manip->out.link(xout_mono->input);
+    //monoLeft->out.link(manip->inputImage);
+    //manip->out.link(xout_mono->input);
 #ifdef H264_STREAMING
     //monoLeft->out.link(videoEnc->input);
     camRgb->video.link(videoEnc->input);
@@ -361,7 +370,7 @@ int main(int argc, char **argv) {
             l_seq = data->getSequenceNum();
             l_ft_tp = data->getTimestamp();
             features_ts = std::chrono::duration<double>(l_ft_tp.time_since_epoch()).count();
-            //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
+            //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
         } else if (q_name == "disparity") {
             auto disp_frame = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_frame->getSequenceNum();
@@ -475,7 +484,7 @@ int main(int argc, char **argv) {
                 if (row >= cam_h) row = cam_h - 1;
                 if (col >= cam_w) col = cam_w - 1;
                 float disp = disp_data[row * cam_w + col] / 8.0f;
-                if (disp > 0 && x - disp > 0) {
+                if (disp > 1) { // do not use features too far away
                     double cur_un_x = l_inv_k11 * x + l_inv_k13;
                     double cur_un_y = l_inv_k22 * y + l_inv_k23;
                     double dt = features_ts - prv_features_ts;
@@ -519,12 +528,12 @@ int main(int argc, char **argv) {
             ccc++;
             if (ccc > 60) {
                 ccc = 0;
-                std::cout << l_features.size() << " features " << c << " LR matched, latency(ms) max " << long_ms << ", min " << short_ms  << "\n";
+                std::cout << "feature points: left " << l_features.size() << " ,stereo " << c << ", latency(ms) max " << long_ms << ", min " << short_ms  << "\n";
                 long_ms = 0;
                 short_ms = INT_MAX;
                 //latency ~ 40 ms
             }
-            //if (c < 10) printf("too few features: %d\n", c);
+            if (c < 10) RCLCPP_WARN_THROTTLE(ros_node->get_logger(), *ros_node->get_clock(), 500, "too few feature points: left %d, stereo %d", l_features.size(), c);
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
