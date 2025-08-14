@@ -349,7 +349,7 @@ int main(int argc, char **argv) {
 #else
     uint8_t* disp_data;
 #endif
-    std::vector<dai::TrackedFeature>* l_features;
+    std::vector<dai::TrackedFeature> l_features;
     std::map<int, MyPoint4d> prv_features;
     double features_ts, prv_features_ts;
     //double last_acc_t = 0;
@@ -367,7 +367,7 @@ int main(int argc, char **argv) {
 
         if (q_name == "trackedFeaturesLeft") {
             auto data = outputFeaturesLeftQueue->get<dai::TrackedFeatures>();
-            l_features = &data->trackedFeatures;
+            l_features = data->trackedFeatures;
             l_seq = data->getSequenceNum();
             l_ft_tp = data->getTimestamp();
             features_ts = std::chrono::duration<double>(l_ft_tp.time_since_epoch()).count();
@@ -477,7 +477,7 @@ int main(int argc, char **argv) {
             int c = 0;
             big_buf[1] = features_ts;
             double* buf_ptr = big_buf + 2;
-            for (const auto &l_feature : *l_features) {
+            for (const auto &l_feature : l_features) {
                 float x = l_feature.position.x;
                 float y = l_feature.position.y;
                 int row = roundf(y);
@@ -529,12 +529,12 @@ int main(int argc, char **argv) {
             ccc++;
             if (ccc > 60) {
                 ccc = 0;
-                std::cout << "feature points: left " << l_features->size() << " ,stereo " << c << ", latency(ms) max " << long_ms << ", min " << short_ms  << "\n";
+                std::cout << "feature points: left " << l_features.size() << " ,stereo " << c << ", latency(ms) max " << long_ms << ", min " << short_ms  << "\n";
                 long_ms = 0;
                 short_ms = INT_MAX;
                 //latency ~ 40 ms
             }
-            if (c < 10) RCLCPP_WARN_THROTTLE(ros_node->get_logger(), *ros_node->get_clock(), 500, "too few feature points: left %d, stereo %d", l_features->size(), c);
+            if (c < 10) RCLCPP_WARN_THROTTLE(ros_node->get_logger(), *ros_node->get_clock(), 500, "too few feature points: left %d, stereo %d", l_features.size(), c);
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
