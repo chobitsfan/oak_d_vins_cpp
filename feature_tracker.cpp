@@ -18,6 +18,7 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/calib3d.hpp>
+#include <opencv2/opencv.hpp>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/header.hpp"
@@ -58,10 +59,21 @@ sensor_msgs::msg::Image disp_img;
 bool mono_img_avail = false;
 bool disp_img_avail = false;
 bool img_pub_go = true;
+std::vector<dai::Point2f> draw_left_fp;
+std::vector<dai::Point2f> draw_stereo_fp;
 
 void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img_pub, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr disp_img_pub) {
     while (img_pub_go) {
         if (mono_img_avail) {
+            cv::Mat img(mono_img.height, mono_img.width, CV_8UC1, mono_img.data.data());
+            for (const auto& fp : draw_stereo_fp) {
+                 cv::circle(img, cv::Point(fp.x, fp.y), 10, cv::Scalar(255));
+            }
+            for (const auto& fp : draw_left_fp) {
+                cv::rectangle(img, cv::Point(fp.x-5, fp.y-5), cv::Point(fp.x+5, fp.y+5), cv::Scalar(255));
+            }
+            draw_stereo_fp.clear();
+            draw_left_fp.clear();
             mono_img_pub->publish(mono_img);
             mono_img_avail = false;
         }
@@ -69,7 +81,7 @@ void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img
             disp_img_pub->publish(disp_img);
             disp_img_avail = false;
         }
-        std::this_thread::sleep_for(10ms);
+        std::this_thread::sleep_for(5ms);
     }
 }
 
@@ -354,6 +366,7 @@ int main(int argc, char **argv) {
     double features_ts, prv_features_ts;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
+    int64_t mono_seq = -4;
 
     // Clear queue events
     //jakaskerl suggest remove this line
@@ -455,23 +468,18 @@ int main(int argc, char **argv) {
 #endif
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
-            mono_pub_c++;
-            if (mono_pub_c > 3) {
-                mono_pub_c = 0;
-                mono_img.header.stamp = ros_node->get_clock()->now();
-                mono_img.height = img_frame->getHeight();
-                mono_img.width = img_frame->getWidth();
-                mono_img.is_bigendian = 0;
-                mono_img.encoding = "mono8";
-                mono_img.step = mono_img.width;
-                mono_img.data = img_frame->getData();
-                mono_img_avail = true;
-            }
+            mono_seq = img_frame->getSequenceNum();
+            mono_img.header.stamp = ros_node->get_clock()->now();
+            mono_img.height = img_frame->getHeight();
+            mono_img.width = img_frame->getWidth();
+            mono_img.is_bigendian = 0;
+            mono_img.encoding = "mono8";
+            mono_img.step = mono_img.width;
+            mono_img.data = img_frame->getData();
         }
 
         if (l_seq == disp_seq) {
             //auto t1 = std::chrono::steady_clock::now();
-            l_seq = -1;
             disp_seq = -3;
             std::map<int , MyPoint4d> features;
             int c = 0;
@@ -517,11 +525,14 @@ int main(int argc, char **argv) {
                     buf_ptr[12] = vy;
                     buf_ptr[13] = f * baseline / disp;
                     features[l_feature.id] = MyPoint4d(cur_un_x, cur_un_y, r_cur_un_x, r_cur_un_y);
+
+                    draw_stereo_fp.push_back(l_feature.position);
+
                     if (c < MAX_FEATURES_COUNT) {
                         ++c;
                         buf_ptr += 14;
                     } else break;
-                }
+                } else draw_left_fp.push_back(l_feature.position);
             }
             int cost_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - l_ft_tp).count();
             if (cost_ms > long_ms) long_ms = cost_ms;
@@ -543,6 +554,10 @@ int main(int argc, char **argv) {
             prv_features_ts = features_ts;
             //auto t2 = std::chrono::steady_clock::now();
             //std::cout << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
+        }
+        if (l_seq == mono_seq && (draw_stereo_fp.size() > 0 || draw_left_fp.size() > 0)) {
+            mono_seq = -1;
+            mono_img_avail = true;
         }
     }
 
