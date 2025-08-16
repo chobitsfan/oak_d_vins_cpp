@@ -85,7 +85,7 @@ void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img
     }
 }
 
-void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
+std::pair<std::vector<dai::Point2f>, std::vector<dai::Point2f>> calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
     //std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
     /*auto imu_ext = calibData.getCameraToImuExtrinsics(dai::CameraBoardSocket::CAM_B, true);
     for (auto& row : imu_ext) {
@@ -103,7 +103,7 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
             data[++i] = val;
         }
     }
-    cv::Mat l_m = cv::Mat(3, 3, CV_32FC1, data);
+    cv::Mat l_m = cv::Mat(3, 3, CV_32FC1, data).clone();
 
     auto r_intrinsics = calibData.getCameraIntrinsics(dai::CameraBoardSocket::CAM_C, cam_w, cam_h);
     i = -1;
@@ -112,7 +112,7 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
             data[++i] = val;
         }
     }
-    cv::Mat r_m = cv::Mat(3, 3, CV_32FC1, data);
+    cv::Mat r_m = cv::Mat(3, 3, CV_32FC1, data).clone();
 
     auto l_d = calibData.getDistortionCoefficients(dai::CameraBoardSocket::CAM_B);
     auto r_d = calibData.getDistortionCoefficients(dai::CameraBoardSocket::CAM_C);
@@ -125,10 +125,54 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
     cv::stereoRectify(l_m, l_d, r_m, r_d, cv::Size(cam_w, cam_h), r, t, r1, r2, p1, p2, q, cv::CALIB_ZERO_DISPARITY, 0);
 
     std::cout << "P1\n" << p1 << "\nP2\n" << p2 << "\n";
+    auto cali_r1 = calibData.getStereoLeftRectificationRotation();
+    i = -1;
+    for (auto row : cali_r1) {
+        for (auto val : row) {
+            data[++i] = val;
+        }
+    }
+    cv::Mat cl_r1 = cv::Mat(3, 3, CV_32FC1, data).clone();
+    std::cout << "my r1\n" << r1 << "\ncali r1\n" << cl_r1 << "\n";
+    auto cali_r2 = calibData.getStereoRightRectificationRotation();
+    i = -1;
+    for (auto row : cali_r2) {
+        for (auto val : row) {
+            data[++i] = val;
+        }
+    }
+    cv::Mat cl_r2 = cv::Mat(3, 3, CV_32FC1, data).clone();
+    std::cout << "my r2\n" << r2 << "\ncali r2\n" << cl_r2 << "\n";
 
     *f = p1.at<double>(0, 0);
     *cx = p1.at<double>(0, 2);
     *cy = p1.at<double>(1, 2);
+
+    cv::Mat new_m = (cv::Mat_<double>(3, 3) <<
+        *f, 0, *cx,
+        0, *f, *cy,
+        0, 0, 1);
+    cv::Mat mapXL, mapYL, mapXR, mapYR;
+    cv::initUndistortRectifyMap(l_m, l_d, r1, new_m, cv::Size(cam_w, cam_h), CV_32FC1, mapXL, mapYL);
+    cv::initUndistortRectifyMap(r_m, r_d, r2, new_m, cv::Size(cam_w, cam_h), CV_32FC1, mapXR, mapYR);
+
+    const int meshCellSize = 16;
+    std::vector<dai::Point2f> meshLeft;
+    std::vector<dai::Point2f> meshRight;
+
+     for (int y = 0; y < cam_h; y += meshCellSize) {
+        for (int x = 0; x < cam_w; x += meshCellSize) {
+            float srcX = mapXL.at<float>(y, x);
+            float srcY = mapYL.at<float>(y, x);
+            meshLeft.emplace_back(srcX, srcY);
+            srcX = mapXR.at<float>(y, x);
+            srcY = mapYR.at<float>(y, x);
+            meshRight.emplace_back(srcX, srcY);
+        }
+    }
+
+    //printf("mesh sz %ld %ld\n", meshLeft.size(), meshRight.size());
+    return {meshLeft, meshRight};
 }
 
 int main(int argc, char **argv) {
@@ -195,6 +239,8 @@ int main(int argc, char **argv) {
     features_addr.sun_family = AF_UNIX;
     strcpy(features_addr.sun_path, "/tmp/chobits_features");
 
+    // connect to oak-d
+    dai::Device device;
     // Create pipeline
     dai::Pipeline pipeline;
 
@@ -262,6 +308,8 @@ int main(int argc, char **argv) {
 #endif
     depth->setDepthAlign(dai::RawStereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_LEFT);
     depth->setAlphaScaling(0);
+    depth->enableDistortionCorrection(false);
+    depth->setRectification(false);
     auto config = depth->initialConfig.get();
     config.postProcessing.speckleFilter.enable = false;
     config.postProcessing.temporalFilter.enable = false;
@@ -293,13 +341,13 @@ int main(int argc, char **argv) {
 #endif
 
     // Linking
-    monoLeft->out.link(depth->left);
-    depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
-    //depth->rectifiedLeft.link(xout_mono->input);
-    featureTrackerLeft->passthroughInputImage.link(xout_mono->input);
+    //monoLeft->out.link(depth->left);
+    //depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
+    depth->rectifiedLeft.link(xout_mono->input);
+    //featureTrackerLeft->passthroughInputImage.link(xout_mono->input);
     featureTrackerLeft->outputFeatures.link(xoutTrackedFeaturesLeft->input);
 
-    monoRight->out.link(depth->right);
+    //monoRight->out.link(depth->right);
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
@@ -310,9 +358,6 @@ int main(int argc, char **argv) {
     camRgb->video.link(videoEnc->input);
     videoEnc->bitstream.link(xout_h264->input);
 #endif
-
-    // Connect to device and start pipeline
-    dai::Device device(pipeline);
 
     std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
     std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
@@ -325,7 +370,8 @@ int main(int argc, char **argv) {
     dai::CalibrationHandler calibData = device.readCalibration2();
     double f, cx, cy;
     float baseline = calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) * 0.01f;
-    calc_rect_cam_intri(calibData, &f, &cx, &cy, cam_w, cam_h);
+    std::vector<dai::Point2f> meshLeft, meshRight;
+    std::tie(meshLeft, meshRight) = calc_rect_cam_intri(calibData, &f, &cx, &cy, cam_w, cam_h);
     float hfov = 2 * atanf(cam_w / (2 * f));
     float vfov = 2 * atanf(cam_h / (2 * f));
     std::cout << "stereo baseline:" << baseline << " m, f:" << f << " px, cx:" << cx << ", cy:" << cy << " hfov:" << hfov * 180 / M_PI << " degrees, vfov:" << vfov * 180 / M_PI << " degrees\n";
@@ -338,13 +384,31 @@ int main(int argc, char **argv) {
     double r_inv_k22 = 1.0 / f;
     double r_inv_k23 = -cy / f;
 
-    /*auto s_pairs = device.getAvailableStereoPairs();
-    for (auto& s_pair : s_pairs) {
-        std::cout << "stereo pair baseline:" << s_pair.baseline << " cm\n";
-    }*/
+    device.setLogOutputLevel(dai::LogLevel::WARN);
+    device.setLogLevel(dai::LogLevel::WARN);
 
-    //device.setLogOutputLevel(dai::LogLevel::WARN);
-    //device.setLogLevel(dai::LogLevel::WARN);
+    auto warp_l = pipeline.create<dai::node::Warp>();
+    auto warp_r = pipeline.create<dai::node::Warp>();
+    warp_l->setHwIds({1});
+    warp_l->setOutputSize(640, 480);
+    warp_l->setMaxOutputFrameSize(640*480);
+    warp_l->setWarpMesh(meshLeft, 640/16, 480/16);
+    warp_r->setHwIds({2});
+    warp_r->setOutputSize(640, 480);
+    warp_r->setMaxOutputFrameSize(640*480);
+    warp_r->setWarpMesh(meshRight, 640/16, 480/16);
+    monoLeft->out.link(warp_l->inputImage);
+    //monoLeft->out.link(xout_mono->input);
+    warp_l->out.link(depth->left);
+    warp_l->out.link(featureTrackerLeft->inputImage);
+    //warp_l->out.link(xout_mono->input);
+    monoRight->out.link(warp_r->inputImage);
+    //monoRight->out.link(xout_mono->input);
+    warp_r->out.link(depth->right);
+    //warp_r->out.link(xout_mono->input);
+
+    // start pipeline
+    device.startPipeline(pipeline);
 
     // Output queues used to receive the results
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
@@ -357,13 +421,13 @@ int main(int argc, char **argv) {
 
     int64_t l_seq = -1, disp_seq = -3;
 #ifdef DEPTH_SUBPIXEL
-    uint16_t* disp_data;
+    uint16_t* disp_data = 0;
 #else
     uint8_t* disp_data;
 #endif
     std::vector<dai::TrackedFeature> l_features;
     std::map<int, MyPoint4d> prv_features;
-    double features_ts, prv_features_ts;
+    double features_ts = 0, prv_features_ts = 0;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
     int64_t mono_seq = -4;
@@ -394,7 +458,7 @@ int main(int argc, char **argv) {
 #else
             disp_data = (uint8_t*)disp_frame_data.data();
 #endif
-            //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
+            //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_frame->getTimestamp()).count() << " ms\n";
             disp_pub_c++;
             if (disp_pub_c > 3) {
                 disp_pub_c = 0;
@@ -476,6 +540,8 @@ int main(int argc, char **argv) {
             mono_img.encoding = "mono8";
             mono_img.step = mono_img.width;
             mono_img.data = img_frame->getData();
+            //mono_img_avail = true;
+            //std::cout << "mono " << img_frame->getWidth() << " " << img_frame->getHeight() << " " <<  static_cast<int>(img_frame->getType()) << " " << img_frame->getData().size() << "\n";
         }
 
         if (l_seq == disp_seq) {
@@ -545,7 +611,7 @@ int main(int argc, char **argv) {
                 short_ms = INT_MAX;
                 //latency ~ 40 ms
             }
-            if (c < 10) RCLCPP_WARN_THROTTLE(ros_node->get_logger(), *ros_node->get_clock(), 500, "too few feature points: left %d, stereo %d", l_features.size(), c);
+            if (c < 10) RCLCPP_WARN_THROTTLE(ros_node->get_logger(), *ros_node->get_clock(), 500, "too few feature points: left %ld, stereo %d", l_features.size(), c);
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
