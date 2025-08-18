@@ -65,6 +65,7 @@ std::vector<dai::Point2f> draw_stereo_fp;
 void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img_pub, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr disp_img_pub) {
     while (img_pub_go) {
         if (mono_img_avail) {
+#ifdef DRAW_FEATURES
             cv::Mat img(mono_img.height, mono_img.width, CV_8UC1, mono_img.data.data());
             for (const auto& fp : draw_stereo_fp) {
                  cv::circle(img, cv::Point(fp.x, fp.y), 10, cv::Scalar(255));
@@ -74,6 +75,7 @@ void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img
             }
             draw_stereo_fp.clear();
             draw_left_fp.clear();
+#endif
             mono_img_pub->publish(mono_img);
             mono_img_avail = false;
         }
@@ -432,6 +434,7 @@ int main(int argc, char **argv) {
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
     int64_t mono_seq = -4;
+    int64_t match_seq = -5;
 
     // Clear queue events
     //jakaskerl suggest remove this line
@@ -547,6 +550,7 @@ int main(int argc, char **argv) {
 
         if (l_seq == disp_seq) {
             //auto t1 = std::chrono::steady_clock::now();
+            match_seq = l_seq;
             disp_seq = -3;
             std::map<int , MyPoint4d> features;
             int c = 0;
@@ -592,14 +596,18 @@ int main(int argc, char **argv) {
                     buf_ptr[12] = vy;
                     buf_ptr[13] = f * baseline / disp;
                     features[l_feature.id] = MyPoint4d(cur_un_x, cur_un_y, r_cur_un_x, r_cur_un_y);
-
+#ifdef DRAW_FEATURES
                     draw_stereo_fp.push_back(l_feature.position);
-
+#endif
                     if (c < MAX_FEATURES_COUNT) {
                         ++c;
                         buf_ptr += 14;
                     } else break;
-                } else draw_left_fp.push_back(l_feature.position);
+                } else {
+#ifdef DRAW_FEATURES
+                    draw_left_fp.push_back(l_feature.position);
+#endif
+                }
             }
             int cost_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - l_ft_tp).count();
             if (cost_ms > long_ms) long_ms = cost_ms;
@@ -622,8 +630,8 @@ int main(int argc, char **argv) {
             //auto t2 = std::chrono::steady_clock::now();
             //std::cout << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
         }
-        if (l_seq == mono_seq && (draw_stereo_fp.size() > 0 || draw_left_fp.size() > 0)) {
-            mono_seq = -1;
+        if (mono_seq == match_seq) {
+            match_seq = -4;
             mono_img_avail = true;
         }
     }
