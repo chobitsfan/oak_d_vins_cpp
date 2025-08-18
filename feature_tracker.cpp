@@ -18,6 +18,7 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/calib3d.hpp>
+#include <opencv2/opencv.hpp>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/header.hpp"
@@ -31,20 +32,23 @@
 
 using namespace std::chrono_literals;
 
-#define MAX_FEATURES_COUNT 60
+#define MAX_FEATURES_COUNT 80
 #define H264_STREAMING
-//#define VIDEO_STREAMING
 #define VIDEO_FPS 20
 #define VIDEO_BITRATE 1500
 #define DEPTH_SUBPIXEL
 
-struct MyPoint2d {
+struct MyPoint4d {
     double x = 0;
     double y = 0;
-    MyPoint2d() {}
-    MyPoint2d(double px, double py) {
+    double rx = 0;
+    double ry = 0;
+    MyPoint4d() {}
+    MyPoint4d(double px, double py, double rpx, double rpy) {
         x = px;
         y = py;
+        rx = rpx;
+        ry = rpy;
     }
 };
 
@@ -55,10 +59,23 @@ sensor_msgs::msg::Image disp_img;
 bool mono_img_avail = false;
 bool disp_img_avail = false;
 bool img_pub_go = true;
+std::vector<dai::Point2f> draw_left_fp;
+std::vector<dai::Point2f> draw_stereo_fp;
 
 void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img_pub, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr disp_img_pub) {
     while (img_pub_go) {
         if (mono_img_avail) {
+#ifdef DRAW_FEATURES
+            cv::Mat img(mono_img.height, mono_img.width, CV_8UC1, mono_img.data.data());
+            for (const auto& fp : draw_stereo_fp) {
+                 cv::circle(img, cv::Point(fp.x, fp.y), 10, cv::Scalar(255));
+            }
+            for (const auto& fp : draw_left_fp) {
+                cv::rectangle(img, cv::Point(fp.x-5, fp.y-5), cv::Point(fp.x+5, fp.y+5), cv::Scalar(255));
+            }
+            draw_stereo_fp.clear();
+            draw_left_fp.clear();
+#endif
             mono_img_pub->publish(mono_img);
             mono_img_avail = false;
         }
@@ -66,11 +83,11 @@ void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img
             disp_img_pub->publish(disp_img);
             disp_img_avail = false;
         }
-        std::this_thread::sleep_for(10ms);
+        std::this_thread::sleep_for(5ms);
     }
 }
 
-void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
+std::pair<std::vector<dai::Point2f>, std::vector<dai::Point2f>> calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* cx, double* cy, int cam_w, int cam_h) {
     //std::cout << "stereo baseline:" << calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) << " cm\n";
     /*auto imu_ext = calibData.getCameraToImuExtrinsics(dai::CameraBoardSocket::CAM_B, true);
     for (auto& row : imu_ext) {
@@ -88,7 +105,7 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
             data[++i] = val;
         }
     }
-    cv::Mat l_m = cv::Mat(3, 3, CV_32FC1, data);
+    cv::Mat l_m = cv::Mat(3, 3, CV_32FC1, data).clone();
 
     auto r_intrinsics = calibData.getCameraIntrinsics(dai::CameraBoardSocket::CAM_C, cam_w, cam_h);
     i = -1;
@@ -97,7 +114,7 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
             data[++i] = val;
         }
     }
-    cv::Mat r_m = cv::Mat(3, 3, CV_32FC1, data);
+    cv::Mat r_m = cv::Mat(3, 3, CV_32FC1, data).clone();
 
     auto l_d = calibData.getDistortionCoefficients(dai::CameraBoardSocket::CAM_B);
     auto r_d = calibData.getDistortionCoefficients(dai::CameraBoardSocket::CAM_C);
@@ -110,10 +127,54 @@ void calc_rect_cam_intri(dai::CalibrationHandler calibData, double* f, double* c
     cv::stereoRectify(l_m, l_d, r_m, r_d, cv::Size(cam_w, cam_h), r, t, r1, r2, p1, p2, q, cv::CALIB_ZERO_DISPARITY, 0);
 
     std::cout << "P1\n" << p1 << "\nP2\n" << p2 << "\n";
+    auto cali_r1 = calibData.getStereoLeftRectificationRotation();
+    i = -1;
+    for (auto row : cali_r1) {
+        for (auto val : row) {
+            data[++i] = val;
+        }
+    }
+    cv::Mat cl_r1 = cv::Mat(3, 3, CV_32FC1, data).clone();
+    std::cout << "my r1\n" << r1 << "\ncali r1\n" << cl_r1 << "\n";
+    auto cali_r2 = calibData.getStereoRightRectificationRotation();
+    i = -1;
+    for (auto row : cali_r2) {
+        for (auto val : row) {
+            data[++i] = val;
+        }
+    }
+    cv::Mat cl_r2 = cv::Mat(3, 3, CV_32FC1, data).clone();
+    std::cout << "my r2\n" << r2 << "\ncali r2\n" << cl_r2 << "\n";
 
     *f = p1.at<double>(0, 0);
     *cx = p1.at<double>(0, 2);
     *cy = p1.at<double>(1, 2);
+
+    cv::Mat new_m = (cv::Mat_<double>(3, 3) <<
+        *f, 0, *cx,
+        0, *f, *cy,
+        0, 0, 1);
+    cv::Mat mapXL, mapYL, mapXR, mapYR;
+    cv::initUndistortRectifyMap(l_m, l_d, r1, new_m, cv::Size(cam_w, cam_h), CV_32FC1, mapXL, mapYL);
+    cv::initUndistortRectifyMap(r_m, r_d, r2, new_m, cv::Size(cam_w, cam_h), CV_32FC1, mapXR, mapYR);
+
+    const int meshCellSize = 16;
+    std::vector<dai::Point2f> meshLeft;
+    std::vector<dai::Point2f> meshRight;
+
+     for (int y = 0; y < cam_h; y += meshCellSize) {
+        for (int x = 0; x < cam_w; x += meshCellSize) {
+            float srcX = mapXL.at<float>(y, x);
+            float srcY = mapYL.at<float>(y, x);
+            meshLeft.emplace_back(srcX, srcY);
+            srcX = mapXR.at<float>(y, x);
+            srcY = mapYR.at<float>(y, x);
+            meshRight.emplace_back(srcX, srcY);
+        }
+    }
+
+    //printf("mesh sz %ld %ld\n", meshLeft.size(), meshRight.size());
+    return {meshLeft, meshRight};
 }
 
 int main(int argc, char **argv) {
@@ -198,7 +259,6 @@ int main(int argc, char **argv) {
     auto monoLeft = pipeline.create<dai::node::MonoCamera>();
     auto monoRight = pipeline.create<dai::node::MonoCamera>();
     auto featureTrackerLeft = pipeline.create<dai::node::FeatureTracker>();
-    auto featureTrackerRight = pipeline.create<dai::node::FeatureTracker>();
     auto imu = pipeline.create<dai::node::IMU>();
 #ifdef H264_STREAMING
     auto camRgb = pipeline.create<dai::node::ColorCamera>();
@@ -235,14 +295,12 @@ int main(int argc, char **argv) {
     auto manip = pipeline.create<dai::node::ImageManip>();
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
-    auto xoutTrackedFeaturesRight = pipeline.create<dai::node::XLinkOut>();
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
     auto xout_mono = pipeline.create<dai::node::XLinkOut>();
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
-    xoutTrackedFeaturesRight->setStreamName("trackedFeaturesRight");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
     xout_mono->setStreamName("mono");
@@ -258,8 +316,10 @@ int main(int argc, char **argv) {
     manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
 
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
-    featureTrackerRight->initialConfig.setNumTargetFeatures(16*5);
-    /*dai::RawFeatureTrackerConfig config = featureTrackerLeft->initialConfig.get();
+    //featureTrackerLeft->initialConfig.setHwMotionEstimation();
+    featureTrackerLeft->setHardwareResources(2, 2);
+    /*dai::RawFeatureTrackerConfig ft_config = featureTrackerLeft->initialConfig.get();
+    printf("feature tracker enableSorting %d\n", ft_config.cornerDetector.enableSorting);
     config.cornerDetector.numMaxFeatures = 100;
     featureTrackerLeft->initialConfig.set(config);
     config = featureTrackerRight->initialConfig.get();
@@ -267,8 +327,6 @@ int main(int argc, char **argv) {
     featureTrackerRight->initialConfig.set(config);*/
     // By default the least mount of resources are allocated
     // increasing it improves performance when optical flow is enabled
-    featureTrackerLeft->setHardwareResources(2, 2);
-    featureTrackerRight->setHardwareResources(2, 2);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::MEDIAN_OFF);
@@ -283,33 +341,59 @@ int main(int argc, char **argv) {
 #endif
     depth->setDepthAlign(dai::RawStereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_LEFT);
     depth->setAlphaScaling(0);
+    depth->enableDistortionCorrection(false);
+    depth->setRectification(false);
+    auto config = depth->initialConfig.get();
+    config.postProcessing.speckleFilter.enable = false;
+    config.postProcessing.temporalFilter.enable = false;
+    config.postProcessing.spatialFilter.enable = false;
+    config.postProcessing.decimationFilter.decimationFactor = 1;
+    depth->initialConfig.set(config);
 
     imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_RAW, 200);
     imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
     // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
     // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
-    imu->setBatchReportThreshold(10);
+    imu->setBatchReportThreshold(5);
     // maximum number of IMU packets in a batch, if it's reached device will block sending until host can receive it
     // if lower or equal to batchReportThreshold then the sending is always blocking on device
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(20);
 
+#ifdef H264_STREAMING
+    camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
+    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
+    camRgb->setFps(VIDEO_FPS);
+    camRgb->setNumFramesPool(2, 2, 2, 2, 2);
+    videoEnc->setDefaultProfilePreset(VIDEO_FPS, dai::VideoEncoderProperties::Profile::H264_MAIN);
+    videoEnc->setKeyframeFrequency(VIDEO_FPS*2);
+    videoEnc->setBitrateKbps(VIDEO_BITRATE);
+    videoEnc->setNumFramesPool(2);
+    videoEnc->input.setQueueSize(2);
+    videoEnc->input.setBlocking(false);
+#endif
+
     // Linking
-    monoLeft->out.link(depth->left);
-    depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
+    //monoLeft->out.link(depth->left);
+    //depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
+    //depth->rectifiedLeft.link(xout_mono->input);
+    //featureTrackerLeft->passthroughInputImage.link(xout_mono->input);
     featureTrackerLeft->outputFeatures.link(xoutTrackedFeaturesLeft->input);
 
-    monoRight->out.link(depth->right);
-    depth->rectifiedRight.link(featureTrackerRight->inputImage);
-    featureTrackerRight->outputFeatures.link(xoutTrackedFeaturesRight->input);
+    //monoRight->out.link(depth->right);
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
     monoLeft->out.link(manip->inputImage);
     manip->out.link(xout_mono->input);
+#ifdef H264_STREAMING
+    //monoLeft->out.link(videoEnc->input);
+    camRgb->video.link(videoEnc->input);
+    videoEnc->bitstream.link(xout_h264->input);
+#endif
 
-    // Connect to device and start pipeline
-    dai::Device device(pipeline);
+    // connect to oak-d
+    dai::Device device(pipeline.getOpenVINOVersion(), dai::UsbSpeed::SUPER_PLUS);
 
     std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
     std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
@@ -322,7 +406,8 @@ int main(int argc, char **argv) {
     dai::CalibrationHandler calibData = device.readCalibration2();
     double f, cx, cy;
     float baseline = calibData.getBaselineDistance(dai::CameraBoardSocket::CAM_B, dai::CameraBoardSocket::CAM_C, false) * 0.01f;
-    calc_rect_cam_intri(calibData, &f, &cx, &cy, cam_w, cam_h);
+    std::vector<dai::Point2f> meshLeft, meshRight;
+    std::tie(meshLeft, meshRight) = calc_rect_cam_intri(calibData, &f, &cx, &cy, cam_w, cam_h);
     float hfov = 2 * atanf(cam_w / (2 * f));
     float vfov = 2 * atanf(cam_h / (2 * f));
     std::cout << "stereo baseline:" << baseline << " m, f:" << f << " px, cx:" << cx << ", cy:" << cy << " hfov:" << hfov * 180 / M_PI << " degrees, vfov:" << vfov * 180 / M_PI << " degrees\n";
@@ -335,17 +420,34 @@ int main(int argc, char **argv) {
     double r_inv_k22 = 1.0 / f;
     double r_inv_k23 = -cy / f;
 
-    /*auto s_pairs = device.getAvailableStereoPairs();
-    for (auto& s_pair : s_pairs) {
-        std::cout << "stereo pair baseline:" << s_pair.baseline << " cm\n";
-    }*/
-
     device.setLogOutputLevel(dai::LogLevel::WARN);
     device.setLogLevel(dai::LogLevel::WARN);
 
+    auto warp_l = pipeline.create<dai::node::Warp>();
+    auto warp_r = pipeline.create<dai::node::Warp>();
+    warp_l->setHwIds({1});
+    warp_l->setOutputSize(640, 480);
+    warp_l->setMaxOutputFrameSize(640*480);
+    warp_l->setWarpMesh(meshLeft, 640/16, 480/16);
+    warp_r->setHwIds({2});
+    warp_r->setOutputSize(640, 480);
+    warp_r->setMaxOutputFrameSize(640*480);
+    warp_r->setWarpMesh(meshRight, 640/16, 480/16);
+    monoLeft->out.link(warp_l->inputImage);
+    //monoLeft->out.link(xout_mono->input);
+    warp_l->out.link(depth->left);
+    warp_l->out.link(featureTrackerLeft->inputImage);
+    //warp_l->out.link(xout_mono->input);
+    monoRight->out.link(warp_r->inputImage);
+    //monoRight->out.link(xout_mono->input);
+    warp_r->out.link(depth->right);
+    //warp_r->out.link(xout_mono->input);
+
+    // start pipeline
+    device.startPipeline(pipeline);
+
     // Output queues used to receive the results
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
-    auto outputFeaturesRightQueue = device.getOutputQueue("trackedFeaturesRight", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 10, false);
     auto mono_queue = device.getOutputQueue("mono", 1, false);
@@ -355,17 +457,19 @@ int main(int argc, char **argv) {
     auto video = device.getOutputQueue("video", 1, false);
 #endif
 
-    int l_seq = -1, r_seq = -2, disp_seq = -3;
+    int64_t l_seq = -1, disp_seq = -3;
 #ifdef DEPTH_SUBPIXEL
-    uint16_t* disp_data;
+    uint16_t* disp_data = 0;
 #else
     uint8_t* disp_data;
 #endif
-    std::vector<dai::TrackedFeature> l_features, r_features;
-    std::map<int, MyPoint2d> l_prv_features, r_prv_features;
-    double features_ts, prv_features_ts;
+    std::vector<dai::TrackedFeature> l_features;
+    std::map<int, MyPoint4d> prv_features;
+    double features_ts = 0, prv_features_ts = 0;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
+    int64_t mono_seq = -4;
+    int64_t match_seq = -5;
 
     // Clear queue events
     //jakaskerl suggest remove this line
@@ -383,12 +487,7 @@ int main(int argc, char **argv) {
             l_seq = data->getSequenceNum();
             l_ft_tp = data->getTimestamp();
             features_ts = std::chrono::duration<double>(l_ft_tp.time_since_epoch()).count();
-            //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - features_tp).count() << " ms\n";
-        } else if (q_name == "trackedFeaturesRight") {
-            auto data = outputFeaturesRightQueue->get<dai::TrackedFeatures>();
-            r_features = data->trackedFeatures;
-            r_seq = data->getSequenceNum();
-            //std::cout << "r ft " << r_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - data->getTimestamp()).count() << " ms\n";
+            //std::cout << "l ft " << l_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l_ft_tp).count() << " ms\n";
         } else if (q_name == "disparity") {
             auto disp_frame = disp_queue->get<dai::ImgFrame>();
             disp_seq = disp_frame->getSequenceNum();
@@ -398,7 +497,7 @@ int main(int argc, char **argv) {
 #else
             disp_data = (uint8_t*)disp_frame_data.data();
 #endif
-            //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_data->getTimestamp()).count() << " ms\n";
+            //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_frame->getTimestamp()).count() << " ms\n";
             disp_pub_c++;
             if (disp_pub_c > 3) {
                 disp_pub_c = 0;
@@ -508,111 +607,77 @@ int main(int argc, char **argv) {
 #endif
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
-            mono_pub_c++;
-            if (mono_pub_c > 3) {
-                mono_pub_c = 0;
-                mono_img.header.stamp = ros_node->get_clock()->now();
-                mono_img.height = img_frame->getHeight();
-                mono_img.width = img_frame->getWidth();
-                mono_img.is_bigendian = 0;
-                mono_img.encoding = "mono8";
-                mono_img.step = mono_img.width;
-                mono_img.data = img_frame->getData();
-                mono_img_avail = true;
-            }
+            mono_seq = img_frame->getSequenceNum();
+            mono_img.header.stamp = ros_node->get_clock()->now();
+            mono_img.height = img_frame->getHeight();
+            mono_img.width = img_frame->getWidth();
+            mono_img.is_bigendian = 0;
+            mono_img.encoding = "mono8";
+            mono_img.step = mono_img.width;
+            mono_img.data = img_frame->getData();
+            //mono_img_avail = true;
+            //std::cout << "mono " << img_frame->getWidth() << " " << img_frame->getHeight() << " " <<  static_cast<int>(img_frame->getType()) << " " << img_frame->getData().size() << "\n";
         }
 
-        if (l_seq == r_seq && r_seq == disp_seq) {
+        if (l_seq == disp_seq) {
             //auto t1 = std::chrono::steady_clock::now();
-            l_seq = -1;
-            r_seq = -2;
+            match_seq = l_seq;
             disp_seq = -3;
-            std::map<int , MyPoint2d> features;
+            std::map<int , MyPoint4d> features;
             int c = 0;
             big_buf[1] = features_ts;
             double* buf_ptr = big_buf + 2;
             for (const auto &l_feature : l_features) {
                 float x = l_feature.position.x;
                 float y = l_feature.position.y;
-                double cur_un_x = l_inv_k11 * x + l_inv_k13;
-                double cur_un_y = l_inv_k22 * y + l_inv_k23;
-                features[l_feature.id] = MyPoint2d(cur_un_x, cur_un_y);
-                int row = y;
-                int col = x;
-                int ceil_row = ceilf(y);
-                int ceil_col = ceilf(x);
-#ifdef DEPTH_SUBPIXEL
-                float disps[4] = {0};
-                float disp;
-                disps[0] = disp_data[row * cam_w + col] / 8.0f;
-                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_data[ceil_row * cam_w + col] / 8.0f;
-                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_data[row * cam_w + ceil_col] / 8.0f;
-                if (disps[1] && disps[2]) {
-                    disps[3] = disp_data[ceil_row * cam_w + ceil_col] / 8.0f;
-                }
-#else
-                int disps[4] = {0};
-                int disp;
-                disps[0] = disp_data[row * cam_w + col];
-                if (ceil_row != (int)y && ceil_row < cam_h) disps[1] = disp_data[ceil_row * cam_w + col];
-                if (ceil_col != (int)x && ceil_col < cam_w) disps[2] = disp_data[row * cam_w + ceil_col];
-                if (disps[1] && disps[2]) {
-                    disps[3] = disp_data[ceil_row * cam_w + ceil_col];
-                }
-#endif
-                for (int i = 0; i < 4; i++) {
-                    disp = disps[i];
-                    if (disp > 0) {
-                        bool pair_found = false;
-                        for (const auto &r_feature : r_features) {
-                            float dy = y - r_feature.position.y;
-                            float dx = x - disp - r_feature.position.x;
-                            if (fabsf(dy) <= 1 && fabsf(dx) <= 2) { //pair found
-                                pair_found = true;
-                                double dt = features_ts - prv_features_ts;
-                                double vx = 0, vy = 0;
-                                auto prv_pos = l_prv_features.find(l_feature.id);
-                                if (prv_pos != l_prv_features.end()) {
-                                    vx = (cur_un_x - prv_pos->second.x) / dt;
-                                    vy = (cur_un_y - prv_pos->second.y) / dt;
-                                }
-                                buf_ptr[0] = l_feature.id;
-                                buf_ptr[1] = cur_un_x;
-                                buf_ptr[2] = cur_un_y;
-                                buf_ptr[3] = x;
-                                buf_ptr[4] = y;
-                                buf_ptr[5] = vx;
-                                buf_ptr[6] = vy;
-
-                                x = r_feature.position.x;
-                                y = r_feature.position.y;
-                                vx = 0;
-                                vy = 0;
-                                cur_un_x = r_inv_k11 * x + r_inv_k13;
-                                cur_un_y = r_inv_k22 * y + r_inv_k23;
-                                prv_pos = r_prv_features.find(r_feature.id);
-                                if (prv_pos != r_prv_features.end()) {
-                                    vx = (cur_un_x - prv_pos->second.x) / dt;
-                                    vy = (cur_un_y - prv_pos->second.y) / dt;
-                                }
-                                buf_ptr[7] = cur_un_x;
-                                buf_ptr[8] = cur_un_y;
-                                buf_ptr[9] = x;
-                                buf_ptr[10] = y;
-                                buf_ptr[11] = vx;
-                                buf_ptr[12] = vy;
-                                buf_ptr[13] = f * baseline / disp;
-
-                                if (c < MAX_FEATURES_COUNT) {
-                                    ++c;
-                                    buf_ptr += 14;
-                                }
-
-                                break;
-                            }
-                        }
-                        if (pair_found) break;
+                int row = roundf(y);
+                int col = roundf(x);
+                if (row >= cam_h) row = cam_h - 1;
+                if (col >= cam_w) col = cam_w - 1;
+                float disp = disp_data[row * cam_w + col] / 8.0f;
+                if (disp > 1) { // do not use features too far away
+                    double cur_un_x = l_inv_k11 * x + l_inv_k13;
+                    double cur_un_y = l_inv_k22 * y + l_inv_k23;
+                    double dt = features_ts - prv_features_ts;
+                    double vx = 0, vy = 0;
+                    auto prv_pos = prv_features.find(l_feature.id);
+                    if (prv_pos != prv_features.end()) {
+                        vx = (cur_un_x - prv_pos->second.x) / dt;
+                        vy = (cur_un_y - prv_pos->second.y) / dt;
                     }
+                    buf_ptr[0] = l_feature.id;
+                    buf_ptr[1] = cur_un_x;
+                    buf_ptr[2] = cur_un_y;
+                    buf_ptr[3] = x;
+                    buf_ptr[4] = y;
+                    buf_ptr[5] = vx;
+                    buf_ptr[6] = vy;
+                    x = x - disp;
+                    double r_cur_un_x = r_inv_k11 * x + r_inv_k13;
+                    double r_cur_un_y = r_inv_k22 * y + r_inv_k23;
+                    if (prv_pos != prv_features.end()) {
+                        vx = (r_cur_un_x - prv_pos->second.rx) / dt;
+                        vy = (r_cur_un_y - prv_pos->second.ry) / dt;
+                    }
+                    buf_ptr[7] = r_cur_un_x;
+                    buf_ptr[8] = r_cur_un_y;
+                    buf_ptr[9] = x;
+                    buf_ptr[10] = y;
+                    buf_ptr[11] = vx;
+                    buf_ptr[12] = vy;
+                    buf_ptr[13] = f * baseline / disp;
+                    features[l_feature.id] = MyPoint4d(cur_un_x, cur_un_y, r_cur_un_x, r_cur_un_y);
+#ifdef DRAW_FEATURES
+                    draw_stereo_fp.push_back(l_feature.position);
+#endif
+                    if (c < MAX_FEATURES_COUNT) {
+                        ++c;
+                        buf_ptr += 14;
+                    } else break;
+                } else {
+#ifdef DRAW_FEATURES
+                    draw_left_fp.push_back(l_feature.position);
+#endif
                 }
             }
             int cost_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - l_ft_tp).count();
@@ -621,24 +686,24 @@ int main(int argc, char **argv) {
             ccc++;
             if (ccc > 60) {
                 ccc = 0;
-                std::cout << l_features.size() << " features " << c << " LR matched, latency(ms) max " << long_ms << ", min " << short_ms  << "\n";
+                std::cout << "feature points: left " << l_features.size() << " ,stereo " << c << ", latency(ms) max " << long_ms << ", min " << short_ms  << "\n";
                 long_ms = 0;
                 short_ms = INT_MAX;
                 //latency ~ 40 ms
             }
-            //if (c < 10) printf("too few features: %d\n", c);
+            if (c < 10) RCLCPP_WARN_THROTTLE(ros_node->get_logger(), *ros_node->get_clock(), 500, "too few feature points: left %ld, stereo %d", l_features.size(), c);
             if (imu_ok && c > 0) {
                 big_buf[0] = c;
                 sendto(ipc_sock, big_buf, 14*sizeof(double)*c+2*sizeof(double), 0, (struct sockaddr*)&features_addr, sizeof(struct sockaddr_un));
             }
-            l_prv_features = features;
+            prv_features = features;
             prv_features_ts = features_ts;
-            r_prv_features.clear();
-            for (const auto &r_feature : r_features) {
-                r_prv_features[r_feature.id] = MyPoint2d(r_inv_k11 * r_feature.position.x + r_inv_k13, r_inv_k22 * r_feature.position.y + r_inv_k23);
-            }
             //auto t2 = std::chrono::steady_clock::now();
             //std::cout << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
+        }
+        if (mono_seq == match_seq) {
+            match_seq = -4;
+            mono_img_avail = true;
         }
     }
 
