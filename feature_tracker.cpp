@@ -239,8 +239,6 @@ int main(int argc, char **argv) {
     features_addr.sun_family = AF_UNIX;
     strcpy(features_addr.sun_path, "/tmp/chobits_features");
 
-    // connect to oak-d
-    dai::Device device;
     // Create pipeline
     dai::Pipeline pipeline;
 
@@ -358,6 +356,9 @@ int main(int argc, char **argv) {
     camRgb->video.link(videoEnc->input);
     videoEnc->bitstream.link(xout_h264->input);
 #endif
+
+    // connect to oak-d
+    dai::Device device(pipeline.getOpenVINOVersion(), dai::UsbSpeed::SUPER_PLUS);
 
     std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
     std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
