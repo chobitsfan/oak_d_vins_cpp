@@ -271,7 +271,7 @@ int main(int argc, char **argv) {
     camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
     camRgb->setFps(VIDEO_FPS);
     camRgb->setNumFramesPool(2, 2, 2, 2, 2);
-    camRgb->setIsp3aFps(5);
+    //camRgb->setIsp3aFps(5);
     videoEnc->setDefaultProfilePreset(VIDEO_FPS, dai::VideoEncoderProperties::Profile::H264_MAIN);
     videoEnc->setKeyframeFrequency(VIDEO_FPS*2);
     videoEnc->setBitrateKbps(VIDEO_BITRATE);
@@ -354,24 +354,11 @@ int main(int argc, char **argv) {
     imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
     // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
     // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
-    imu->setBatchReportThreshold(5);
+    imu->setBatchReportThreshold(2);
     // maximum number of IMU packets in a batch, if it's reached device will block sending until host can receive it
     // if lower or equal to batchReportThreshold then the sending is always blocking on device
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
     imu->setMaxBatchReports(20);
-
-#ifdef H264_STREAMING
-    camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
-    camRgb->setResolution(dai::ColorCameraProperties::SensorResolution::THE_1080_P);
-    camRgb->setFps(VIDEO_FPS);
-    camRgb->setNumFramesPool(2, 2, 2, 2, 2);
-    videoEnc->setDefaultProfilePreset(VIDEO_FPS, dai::VideoEncoderProperties::Profile::H264_MAIN);
-    videoEnc->setKeyframeFrequency(VIDEO_FPS*2);
-    videoEnc->setBitrateKbps(VIDEO_BITRATE);
-    videoEnc->setNumFramesPool(2);
-    videoEnc->input.setQueueSize(2);
-    videoEnc->input.setBlocking(false);
-#endif
 
     // Linking
     //monoLeft->out.link(depth->left);
@@ -386,11 +373,6 @@ int main(int argc, char **argv) {
     imu->out.link(xout_imu->input);
     monoLeft->out.link(manip->inputImage);
     manip->out.link(xout_mono->input);
-#ifdef H264_STREAMING
-    //monoLeft->out.link(videoEnc->input);
-    camRgb->video.link(videoEnc->input);
-    videoEnc->bitstream.link(xout_h264->input);
-#endif
 
     // connect to oak-d
     dai::Device device(pipeline.getOpenVINOVersion(), dai::UsbSpeed::SUPER_PLUS);
@@ -468,8 +450,6 @@ int main(int argc, char **argv) {
     double features_ts = 0, prv_features_ts = 0;
     //double last_acc_t = 0;
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::steady_clock::duration> l_ft_tp;
-    int64_t mono_seq = -4;
-    int64_t match_seq = -5;
 
     // Clear queue events
     //jakaskerl suggest remove this line
@@ -607,21 +587,23 @@ int main(int argc, char **argv) {
 #endif
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
-            mono_seq = img_frame->getSequenceNum();
-            mono_img.header.stamp = ros_node->get_clock()->now();
-            mono_img.height = img_frame->getHeight();
-            mono_img.width = img_frame->getWidth();
-            mono_img.is_bigendian = 0;
-            mono_img.encoding = "mono8";
-            mono_img.step = mono_img.width;
-            mono_img.data = img_frame->getData();
-            //mono_img_avail = true;
+            mono_pub_c++;
+            if (mono_pub_c > 3) {
+                mono_pub_c = 0;
+                mono_img.header.stamp = ros_node->get_clock()->now();
+                mono_img.height = img_frame->getHeight();
+                mono_img.width = img_frame->getWidth();
+                mono_img.is_bigendian = 0;
+                mono_img.encoding = "mono8";
+                mono_img.step = mono_img.width;
+                mono_img.data = img_frame->getData();
+                mono_img_avail = true;
+            }
             //std::cout << "mono " << img_frame->getWidth() << " " << img_frame->getHeight() << " " <<  static_cast<int>(img_frame->getType()) << " " << img_frame->getData().size() << "\n";
         }
 
         if (l_seq == disp_seq) {
             //auto t1 = std::chrono::steady_clock::now();
-            match_seq = l_seq;
             disp_seq = -3;
             std::map<int , MyPoint4d> features;
             int c = 0;
@@ -700,10 +682,6 @@ int main(int argc, char **argv) {
             prv_features_ts = features_ts;
             //auto t2 = std::chrono::steady_clock::now();
             //std::cout << std::chrono::duration<float, std::milli>(t2-t1).count() << " ms\n";
-        }
-        if (mono_seq == match_seq) {
-            match_seq = -4;
-            mono_img_avail = true;
         }
     }
 
