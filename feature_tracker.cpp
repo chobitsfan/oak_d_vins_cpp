@@ -37,6 +37,7 @@ using namespace std::chrono_literals;
 #define VIDEO_FPS 20
 #define VIDEO_BITRATE 1500
 #define DEPTH_SUBPIXEL
+#define DRAW_FEATURES
 
 struct MyPoint4d {
     double x = 0;
@@ -275,16 +276,21 @@ int main(int argc, char **argv) {
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     monoLeft->setCamera("left");
-    monoLeft->setFps(20);
+    monoLeft->setFps(30);
+    monoLeft->initialControl.setSceneMode(dai::CameraControl::SceneMode::ACTION);
     monoRight->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     monoRight->setCamera("right");
-    monoRight->setFps(20);
+    monoRight->setFps(30);
+    monoRight->initialControl.setSceneMode(dai::CameraControl::SceneMode::ACTION);
 
     //manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
 
+    // By default the least mount of resources are allocated
+    // increasing it improves performance when optical flow is enabled
+    featureTrackerLeft->setHardwareResources(2, 2);
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
     //featureTrackerLeft->initialConfig.setHwMotionEstimation();
-    featureTrackerLeft->setHardwareResources(2, 2);
+    featureTrackerLeft->initialConfig.setOpticalFlow(); // optical flow is more stable than hw motion est, thanks ludo
     /*dai::RawFeatureTrackerConfig ft_config = featureTrackerLeft->initialConfig.get();
     printf("feature tracker enableSorting %d\n", ft_config.cornerDetector.enableSorting);
     config.cornerDetector.numMaxFeatures = 100;
@@ -292,8 +298,6 @@ int main(int argc, char **argv) {
     config = featureTrackerRight->initialConfig.get();
     config.cornerDetector.numMaxFeatures = 100;
     featureTrackerRight->initialConfig.set(config);*/
-    // By default the least mount of resources are allocated
-    // increasing it improves performance when optical flow is enabled
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::MEDIAN_OFF);
@@ -321,7 +325,7 @@ int main(int argc, char **argv) {
     imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
     // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
     // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
-    imu->setBatchReportThreshold(5);
+    imu->setBatchReportThreshold(1);
     // maximum number of IMU packets in a batch, if it's reached device will block sending until host can receive it
     // if lower or equal to batchReportThreshold then the sending is always blocking on device
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
@@ -343,8 +347,8 @@ int main(int argc, char **argv) {
     // Linking
     //monoLeft->out.link(depth->left);
     //depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
-    depth->rectifiedLeft.link(xout_mono->input);
-    //featureTrackerLeft->passthroughInputImage.link(xout_mono->input);
+    //depth->rectifiedLeft.link(xout_mono->input);
+    featureTrackerLeft->passthroughInputImage.link(xout_mono->input);
     featureTrackerLeft->outputFeatures.link(xoutTrackedFeaturesLeft->input);
 
     //monoRight->out.link(depth->right);
@@ -392,11 +396,11 @@ int main(int argc, char **argv) {
 
     auto warp_l = pipeline.create<dai::node::Warp>();
     auto warp_r = pipeline.create<dai::node::Warp>();
-    warp_l->setHwIds({1});
+    warp_l->setHwIds({0});
     warp_l->setOutputSize(640, 480);
     warp_l->setMaxOutputFrameSize(640*480);
     warp_l->setWarpMesh(meshLeft, 640/16, 480/16);
-    warp_r->setHwIds({2});
+    warp_r->setHwIds({1});
     warp_r->setOutputSize(640, 480);
     warp_r->setMaxOutputFrameSize(640*480);
     warp_r->setWarpMesh(meshRight, 640/16, 480/16);
