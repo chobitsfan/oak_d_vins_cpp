@@ -276,28 +276,29 @@ int main(int argc, char **argv) {
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     monoLeft->setCamera("left");
-    monoLeft->setFps(30);
-    monoLeft->initialControl.setSceneMode(dai::CameraControl::SceneMode::ACTION);
+    monoLeft->setFps(25);
+    monoLeft->initialControl.setAutoExposureRegion(0, 240, 640, 240);
+    //monoLeft->initialControl.setAutoExposureCompensation(-1);
     monoRight->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     monoRight->setCamera("right");
-    monoRight->setFps(30);
-    monoRight->initialControl.setSceneMode(dai::CameraControl::SceneMode::ACTION);
+    monoRight->setFps(25);
+    monoRight->initialControl.setAutoExposureRegion(0, 240, 640, 240);
+    //monoRight->initialControl.setAutoExposureCompensation(-1);
 
     //manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
 
     // By default the least mount of resources are allocated
     // increasing it improves performance when optical flow is enabled
     featureTrackerLeft->setHardwareResources(2, 2);
-    featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
+    featureTrackerLeft->initialConfig.setNumTargetFeatures(16*6);
     //featureTrackerLeft->initialConfig.setHwMotionEstimation();
     featureTrackerLeft->initialConfig.setOpticalFlow(); // optical flow is more stable than hw motion est, thanks ludo
-    /*dai::RawFeatureTrackerConfig ft_config = featureTrackerLeft->initialConfig.get();
-    printf("feature tracker enableSorting %d\n", ft_config.cornerDetector.enableSorting);
-    config.cornerDetector.numMaxFeatures = 100;
-    featureTrackerLeft->initialConfig.set(config);
-    config = featureTrackerRight->initialConfig.get();
-    config.cornerDetector.numMaxFeatures = 100;
-    featureTrackerRight->initialConfig.set(config);*/
+    featureTrackerLeft->initialConfig.setCornerDetector(dai::FeatureTrackerConfig::CornerDetector::Type::SHI_THOMASI);
+    //dai::RawFeatureTrackerConfig ft_config = featureTrackerLeft->initialConfig.get();
+    //printf("CornerDetector %d\n", ft_config.cornerDetector.numMaxFeatures);
+    //printf("feature tracker enableSorting %d\n", ft_config.cornerDetector.enableSorting);
+    //config.cornerDetector.numMaxFeatures = 100;
+    //featureTrackerLeft->initialConfig.set(config);
 
     depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
     depth->initialConfig.setMedianFilter(dai::MedianFilter::MEDIAN_OFF);
