@@ -468,10 +468,12 @@ int main(int argc, char **argv) {
             disp_data = (uint8_t*)disp_frame_data.data();
 #endif
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_frame->getTimestamp()).count() << " ms\n";
-            disp_pub_c++;
-            if (disp_pub_c > 3) {
-                disp_pub_c = 0;
-                disp_img.header.stamp = ros_node->get_clock()->now();
+            //disp_pub_c++;
+            //if (disp_pub_c > 3) {
+                //disp_pub_c = 0;
+                int64_t ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(disp_frame->getTimestamp()).time_since_epoch().count();
+                disp_img.header.stamp.sec = static_cast<int32_t>(ns / 1000000000);
+                disp_img.header.stamp.nanosec = static_cast<uint32_t>(ns % 1000000000);
                 disp_img.height = disp_frame->getHeight();
                 disp_img.width = disp_frame->getWidth();
                 disp_img.is_bigendian = 0;
@@ -484,7 +486,7 @@ int main(int argc, char **argv) {
 #endif
                 disp_img.data = disp_frame_data;
                 disp_img_avail = true;
-            }
+            //}
         } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
             auto imuPackets = imuData->packets;
@@ -542,7 +544,9 @@ int main(int argc, char **argv) {
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_seq = img_frame->getSequenceNum();
-            mono_img.header.stamp = ros_node->get_clock()->now();
+            int64_t ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(img_frame->getTimestamp()).time_since_epoch().count();
+            mono_img.header.stamp.sec = static_cast<int32_t>(ns / 1000000000);
+            mono_img.header.stamp.nanosec = static_cast<uint32_t>(ns % 1000000000);
             mono_img.height = img_frame->getHeight();
             mono_img.width = img_frame->getWidth();
             mono_img.is_bigendian = 0;
@@ -551,6 +555,7 @@ int main(int argc, char **argv) {
             mono_img.data = img_frame->getData();
             //mono_img_avail = true;
             //std::cout << "mono " << img_frame->getWidth() << " " << img_frame->getHeight() << " " <<  static_cast<int>(img_frame->getType()) << " " << img_frame->getData().size() << "\n";
+            //std::cout << "exp time " << std::chrono::duration_cast<std::chrono::milliseconds>(img_frame->getExposureTime()).count() << " ms\n";
         }
 
         if (l_seq == disp_seq) {
