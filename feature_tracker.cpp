@@ -315,9 +315,11 @@ int main(int argc, char **argv) {
 
     manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
 
-    featureTrackerLeft->initialConfig.setNumTargetFeatures(16*5);
-    //featureTrackerLeft->initialConfig.setHwMotionEstimation();
     featureTrackerLeft->setHardwareResources(2, 2);
+    featureTrackerLeft->initialConfig.setNumTargetFeatures(16*6);
+    //featureTrackerLeft->initialConfig.setHwMotionEstimation();
+    featureTrackerLeft->initialConfig.setOpticalFlow(); // optical flow is more stable than hw motion est, thanks ludo
+    featureTrackerLeft->initialConfig.setCornerDetector(dai::FeatureTrackerConfig::CornerDetector::Type::SHI_THOMASI);
     /*dai::RawFeatureTrackerConfig ft_config = featureTrackerLeft->initialConfig.get();
     printf("feature tracker enableSorting %d\n", ft_config.cornerDetector.enableSorting);
     config.cornerDetector.numMaxFeatures = 100;
