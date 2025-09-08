@@ -190,7 +190,6 @@ int main(int argc, char **argv) {
     unsigned char seq_num = 0;
     int hcc_cnt1=0;
     unsigned int pre_time1=0;
-    struct timespec tm, now;
     unsigned int curr_time=0;
 
     if (argc < 2) {
@@ -292,18 +291,23 @@ int main(int argc, char **argv) {
     xoutVideo->input.setBlocking(false);
     xoutVideo->input.setQueueSize(1);
 #endif
+#ifdef PUB_MONO_LEFT
     auto manip = pipeline.create<dai::node::ImageManip>();
+    manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
+    auto xout_mono = pipeline.create<dai::node::XLinkOut>();
+    xout_mono->setStreamName("mono");
+    monoLeft->out.link(manip->inputImage);
+    manip->out.link(xout_mono->input);
+#endif
 
     auto xoutTrackedFeaturesLeft = pipeline.create<dai::node::XLinkOut>();
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
-    auto xout_mono = pipeline.create<dai::node::XLinkOut>();
 
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
-    xout_mono->setStreamName("mono");
 
     // Properties
     monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
@@ -312,8 +316,6 @@ int main(int argc, char **argv) {
     monoRight->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     monoRight->setCamera("right");
     monoRight->setFps(20);
-
-    manip->initialConfig.setCropRect(0.2, 0.2, 0.8, 0.8);
 
     featureTrackerLeft->setHardwareResources(2, 2);
     featureTrackerLeft->initialConfig.setNumTargetFeatures(16*6);
@@ -356,11 +358,11 @@ int main(int argc, char **argv) {
     imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_RAW, 200);
     // it's recommended to set both setBatchReportThreshold and setMaxBatchReports to 20 when integrating in a pipeline with a lot of input/output connections
     // above this threshold packets will be sent in batch of X, if the host is not blocked and USB bandwidth is available
-    imu->setBatchReportThreshold(2);
+    imu->setBatchReportThreshold(1);
     // maximum number of IMU packets in a batch, if it's reached device will block sending until host can receive it
     // if lower or equal to batchReportThreshold then the sending is always blocking on device
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
-    imu->setMaxBatchReports(20);
+    imu->setMaxBatchReports(10);
 
     // Linking
     //monoLeft->out.link(depth->left);
@@ -373,11 +375,9 @@ int main(int argc, char **argv) {
 
     depth->disparity.link(xout_disp->input);
     imu->out.link(xout_imu->input);
-    monoLeft->out.link(manip->inputImage);
-    manip->out.link(xout_mono->input);
 
     // connect to oak-d
-    dai::Device device(pipeline.getOpenVINOVersion(), dai::UsbSpeed::SUPER_PLUS);
+    dai::Device device;
 
     std::cout << "Usb speed: " << device.getUsbSpeed() << "\n";
     std::cout << "Device name: " << device.getDeviceName() << " Product name: " << device.getProductName() << "\n";
@@ -434,7 +434,9 @@ int main(int argc, char **argv) {
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 10, false);
+#ifdef PUB_MONO_LEFT
     auto mono_queue = device.getOutputQueue("mono", 1, false);
+#endif
 #ifdef H264_STREAMING
     auto video = device.getOutputQueue("h264", 1, false);
 #elif defined(VIDEO_STREAMING)
@@ -561,7 +563,8 @@ int main(int argc, char **argv) {
             auto videoPacket = video->get<dai::ImgFrame>();
             int video_pkt_len = videoPacket->getData().size();
 
-			/*clock_gettime(CLOCK_MONOTONIC, &tm);
+			/*struct timespec tm;
+            clock_gettime(CLOCK_MONOTONIC, &tm);
 			curr_time = tm.tv_sec * 1000 + tm.tv_nsec / 1000000L;
 			hcc_cnt1++;
 
@@ -587,6 +590,7 @@ int main(int argc, char **argv) {
             if(seq_num == 0xff) seq_num = 0;
             video_pkt_data[video_pkt_len+5] = 1;
 #endif
+#ifdef PUB_MONO_LEFT
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_pub_c++;
@@ -602,6 +606,7 @@ int main(int argc, char **argv) {
                 mono_img_avail = true;
             }
             //std::cout << "mono " << img_frame->getWidth() << " " << img_frame->getHeight() << " " <<  static_cast<int>(img_frame->getType()) << " " << img_frame->getData().size() << "\n";
+#endif
         }
 
         if (l_seq == disp_seq) {
