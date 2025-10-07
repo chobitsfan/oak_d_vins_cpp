@@ -37,7 +37,8 @@ using namespace std::chrono_literals;
 #define VIDEO_FPS 20
 #define VIDEO_BITRATE 1500
 #define DEPTH_SUBPIXEL
-#define DRAW_FEATURES
+//#define DRAW_FEATURES
+//#define PUB_MONO_LEFT
 
 struct MyPoint4d {
     double x = 0;
@@ -65,6 +66,7 @@ std::vector<dai::Point2f> draw_stereo_fp;
 
 void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img_pub, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr disp_img_pub) {
     while (img_pub_go) {
+#ifdef PUB_MONO_LEFT
         if (mono_img_avail) {
 #ifdef DRAW_FEATURES
             cv::Mat img(mono_img.height, mono_img.width, CV_8UC1, mono_img.data.data());
@@ -80,6 +82,7 @@ void img_pub_func(rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mono_img
             mono_img_pub->publish(mono_img);
             mono_img_avail = false;
         }
+#endif
         if (disp_img_avail) {
             disp_img_pub->publish(disp_img);
             disp_img_avail = false;
@@ -196,7 +199,9 @@ int main(int argc, char **argv) {
 
     rclcpp::init(argc, argv);
     auto ros_node = rclcpp::Node::make_shared("feature_tracker");
+#ifdef PUB_MONO_LEFT
     auto mono_img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("mono_left", rclcpp::QoS(1).best_effort().durability_volatile());
+#endif
     auto disp_img_pub = ros_node->create_publisher<sensor_msgs::msg::Image>("disparity", rclcpp::QoS(1).best_effort().durability_volatile());
 
 #ifdef REC_IMU
@@ -260,7 +265,10 @@ int main(int argc, char **argv) {
     auto depth = pipeline.create<dai::node::StereoDepth>();
     auto xout_disp = pipeline.create<dai::node::XLinkOut>();
     auto xout_imu = pipeline.create<dai::node::XLinkOut>();
+#ifdef PUB_MONO_LEFT
     auto xout_mono = pipeline.create<dai::node::XLinkOut>();
+    xout_mono->setStreamName("mono");
+#endif
 #ifdef H264_STREAMING
     auto xout_h264 = pipeline.create<dai::node::XLinkOut>();
 #endif
@@ -268,7 +276,6 @@ int main(int argc, char **argv) {
     xoutTrackedFeaturesLeft->setStreamName("trackedFeaturesLeft");
     xout_disp->setStreamName("disparity");
     xout_imu->setStreamName("imu");
-    xout_mono->setStreamName("mono");
 #ifdef H264_STREAMING
     xout_h264->setStreamName("h264");
 #endif
@@ -349,7 +356,9 @@ int main(int argc, char **argv) {
     //monoLeft->out.link(depth->left);
     //depth->rectifiedLeft.link(featureTrackerLeft->inputImage);
     //depth->rectifiedLeft.link(xout_mono->input);
+#ifdef PUB_MONO_LEFT
     featureTrackerLeft->passthroughInputImage.link(xout_mono->input);
+#endif
     featureTrackerLeft->outputFeatures.link(xoutTrackedFeaturesLeft->input);
 
     //monoRight->out.link(depth->right);
@@ -422,7 +431,9 @@ int main(int argc, char **argv) {
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
     auto imuQueue = device.getOutputQueue("imu", 10, false);
+#ifdef PUB_MONO_LEFT
     auto mono_queue = device.getOutputQueue("mono", 1, false);
+#endif
 #ifdef H264_STREAMING
     auto video = device.getOutputQueue("h264", 1, false);
 #endif
@@ -446,7 +457,11 @@ int main(int argc, char **argv) {
     //https://discuss.luxonis.com/d/3484-getqueueevent-takes-much-additional-time/7
     //device.getQueueEvents();
 
+#ifdef PUB_MONO_LEFT
     std::thread img_pub_worker(img_pub_func, mono_img_pub, disp_img_pub);
+#else
+    std::thread img_pub_worker(img_pub_func, nullptr, disp_img_pub);
+#endif
 
     while(rclcpp::ok()) {
         auto q_name = device.getQueueEvent();
@@ -514,8 +529,8 @@ int main(int argc, char **argv) {
                 imu_ok = true;
                 std::cout<< "imu ok\n";
             }
-        } else if (q_name == "h264") {
 #ifdef H264_STREAMING
+        } else if (q_name == "h264") {
             if (!h264_ok) {
                 h264_ok = true;
                 std::cout<<"h264 ok\n";
@@ -541,6 +556,7 @@ int main(int argc, char **argv) {
             if(seq_num == 0xff) seq_num = 0;
             h264_pkt_data[h264_pkt_len+5] = 1;
 #endif
+#ifdef PUB_MONO_LEFT
         } else if (q_name == "mono") {
             auto img_frame = mono_queue->get<dai::ImgFrame>();
             mono_seq = img_frame->getSequenceNum();
@@ -556,6 +572,7 @@ int main(int argc, char **argv) {
             //mono_img_avail = true;
             //std::cout << "mono " << img_frame->getWidth() << " " << img_frame->getHeight() << " " <<  static_cast<int>(img_frame->getType()) << " " << img_frame->getData().size() << "\n";
             //std::cout << "exp time " << std::chrono::duration_cast<std::chrono::milliseconds>(img_frame->getExposureTime()).count() << " ms\n";
+#endif
         }
 
         if (l_seq == disp_seq) {
