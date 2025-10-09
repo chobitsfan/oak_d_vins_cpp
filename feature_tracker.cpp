@@ -337,7 +337,7 @@ int main(int argc, char **argv) {
     // maximum number of IMU packets in a batch, if it's reached device will block sending until host can receive it
     // if lower or equal to batchReportThreshold then the sending is always blocking on device
     // useful to reduce device's CPU load  and number of lost packets, if CPU load is high on device side due to multiple nodes
-    imu->setMaxBatchReports(20);
+    imu->setMaxBatchReports(10);
 
 #ifdef H264_STREAMING
     camRgb->setBoardSocket(dai::CameraBoardSocket::CAM_A);
@@ -430,7 +430,7 @@ int main(int argc, char **argv) {
     // Output queues used to receive the results
     auto outputFeaturesLeftQueue = device.getOutputQueue("trackedFeaturesLeft", 1, false);
     auto disp_queue = device.getOutputQueue("disparity", 1, false);
-    auto imuQueue = device.getOutputQueue("imu", 10, false);
+    auto imuQueue = device.getOutputQueue("imu", 50, false);
 #ifdef PUB_MONO_LEFT
     auto mono_queue = device.getOutputQueue("mono", 1, false);
 #endif
