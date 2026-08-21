@@ -33,10 +33,11 @@
 using namespace std::chrono_literals;
 
 #define MAX_FEATURES_COUNT 80
-#define H264_STREAMING
+//#define H264_STREAMING
 #define VIDEO_FPS 20
 #define VIDEO_BITRATE 1500
 #define DEPTH_SUBPIXEL
+//#define PUB_MONO_LEFT
 
 struct MyPoint4d {
     double x = 0;
@@ -178,19 +179,21 @@ std::pair<std::vector<dai::Point2f>, std::vector<dai::Point2f>> calc_rect_cam_in
 }
 
 int main(int argc, char **argv) {
-    bool h264_ok = false;
     int cam_w, cam_h;
     bool imu_ok = false;
     int ccc=0;
     int long_ms=0;
     int short_ms=INT_MAX;
     unsigned int mono_pub_c = 0;
-    unsigned int disp_pub_c = 0;
+    //unsigned int disp_pub_c = 0;
 
+#if defined(H264_STREAMING) || defined(VIDEO_STREAMING)
+    bool h264_ok = false;
     unsigned char seq_num = 0;
     int hcc_cnt1=0;
     unsigned int pre_time1=0;
     unsigned int curr_time=0;
+#endif
 
     if (argc < 2) {
         printf("usage: %s imu_tk_cali.yml\n", argv[0]);
@@ -482,7 +485,7 @@ int main(int argc, char **argv) {
             disp_data = (uint8_t*)disp_frame_data.data();
 #endif
             //std::cout << "stereo " << disp_seq << " latency:" << std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - disp_frame->getTimestamp()).count() << " ms\n";
-            disp_pub_c++;
+            /*disp_pub_c++;
             if (disp_pub_c > 3) {
                 disp_pub_c = 0;
                 disp_img.header.stamp = ros_node->get_clock()->now();
@@ -498,7 +501,7 @@ int main(int argc, char **argv) {
 #endif
                 disp_img.data = disp_frame_data;
                 disp_img_avail = true;
-            }
+            }*/
         } else if (q_name == "imu") {
             auto imuData = imuQueue->get<dai::IMUData>();
             auto imuPackets = imuData->packets;
